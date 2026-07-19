@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 TX-220 with assistance from Grok (xAI) - https://x.ai
 """VesperForge — local session browser for Grok Build."""
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from contextlib import asynccontextmanager
@@ -32,6 +36,11 @@ from lib.sessions import (
 
 STATIC_DIR = ROOT / "static"
 EXPORT_SCRIPT = Path.home() / "bin/grok-export-to-obsidian"
+DEFAULT_OBSIDIAN_DIR = Path.home() / "obsidian-vault/Second-Brain/Sessions/Vesper"
+SYNC_LOG_PATH = Path("/tmp/vesper-forge-obsidian-sync.log")
+SYNC_TIMEOUT_SEC = 300
+
+logger = logging.getLogger("vesperforge")
 
 store = HubStore.load()
 
@@ -44,7 +53,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="VesperForge", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="VesperForge", version="1.1.1", lifespan=lifespan)
 
 
 class AliasUpdate(BaseModel):
@@ -169,11 +178,19 @@ def refresh_sessions() -> RefreshResponse:
             capture_output=True,
             text=True,
             timeout=120,
+            env=_hub_env(),
         )
         output = (proc.stdout or "") + (proc.stderr or "")
         if "imported" in output.lower():
             imported = output.lower().count("imported")
-    except (subprocess.TimeoutExpired, OSError) as exc:
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            return RefreshResponse(
+                ok=False,
+                message=f"grok import failed: {err}",
+                total=before,
+            )
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as exc:
         return RefreshResponse(ok=False, message=str(exc), total=before)
     after = len(list((Path.home() / ".grok/sessions").rglob("summary.json")))
     new_count = max(0, after - before)
@@ -286,45 +303,92 @@ def _hub_env() -> dict[str, str]:
     return env
 
 
+def _write_sync_log(text: str) -> None:
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    body = f"=== VesperForge sync {stamp} ===\n{text.rstrip()}\n"
+    try:
+        SYNC_LOG_PATH.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("could not write sync log %s: %s", SYNC_LOG_PATH, exc)
+
+
 def _parse_export_done_line(output: str) -> tuple[int, int, int, int]:
     """Parse: done: 21 synced, 0 skipped, 0 empty, 0 failed"""
     synced = skipped = empty = failed = 0
     m = re.search(
         r"done:\s*(\d+)\s*synced,\s*(\d+)\s*skipped,\s*(\d+)\s*empty,\s*(\d+)\s*failed",
         output,
+        flags=re.IGNORECASE,
     )
     if m:
         synced, skipped, empty, failed = (int(m.group(i)) for i in range(1, 5))
-    return synced, skipped, empty, failed
+        return synced, skipped, empty, failed
+    # Fallback: count [ok] lines if exporter format drifts
+    ok_lines = len(re.findall(r"^\[ok\]\s+", output, flags=re.MULTILINE))
+    fail_lines = len(re.findall(r"^\[fail\]\s+", output, flags=re.MULTILINE))
+    skip_lines = len(re.findall(r"^\[skip\]\s+", output, flags=re.MULTILINE))
+    return ok_lines, skip_lines, 0, fail_lines
+
+
+def _preflight_sync(output_dir: Path) -> str | None:
+    """Return error message if sync cannot start, else None."""
+    if not EXPORT_SCRIPT.exists():
+        return f"export script not found: {EXPORT_SCRIPT}"
+    if not os.access(EXPORT_SCRIPT, os.X_OK) and not EXPORT_SCRIPT.suffix == ".py":
+        # Still runnable via python3 if not executable
+        pass
+    env = _hub_env()
+    grok = shutil.which("grok", path=env.get("PATH"))
+    if not grok:
+        return "grok CLI not found on PATH (install Grok Build and ensure PATH includes it)"
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"cannot create Obsidian output dir {output_dir}: {exc}"
+    if not os.access(output_dir, os.W_OK):
+        return f"Obsidian output dir not writable: {output_dir}"
+    return None
 
 
 @app.post("/api/sync")
 def sync_obsidian() -> SyncResponse:
     """Run grok-export-to-obsidian --all --import-remote --force and wait for result."""
-    output_dir = Path.home() / "obsidian-vault/Second-Brain/Sessions/Vesper"
-    log_path = Path("/tmp/vesper-hub-obsidian-sync.log")
+    output_dir = DEFAULT_OBSIDIAN_DIR
+    log_path = SYNC_LOG_PATH
 
-    if not EXPORT_SCRIPT.exists():
+    preflight_err = _preflight_sync(output_dir)
+    if preflight_err:
+        _write_sync_log(f"PREFLIGHT FAIL\n{preflight_err}")
         return SyncResponse(
             ok=False,
-            message=f"export script not found: {EXPORT_SCRIPT}",
+            message=preflight_err,
             log_path=str(log_path),
             output_dir=str(output_dir),
         )
 
-    cmd = [str(EXPORT_SCRIPT), "--all", "--import-remote", "--force"]
+    # Prefer explicit python3 for non-executable scripts
+    if EXPORT_SCRIPT.suffix == ".py":
+        cmd = [sys.executable, str(EXPORT_SCRIPT), "--all", "--import-remote", "--force"]
+    else:
+        cmd = [str(EXPORT_SCRIPT), "--all", "--import-remote", "--force"]
+
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=SYNC_TIMEOUT_SEC,
             env=_hub_env(),
             cwd=str(Path.home()),
         )
-    except subprocess.TimeoutExpired:
-        msg = "Obsidian sync timed out after 300s"
-        log_path.write_text(msg + "\n", encoding="utf-8")
+    except subprocess.TimeoutExpired as exc:
+        partial = ""
+        if exc.stdout:
+            partial += str(exc.stdout)
+        if exc.stderr:
+            partial += "\n" + str(exc.stderr)
+        msg = f"Obsidian sync timed out after {SYNC_TIMEOUT_SEC}s"
+        _write_sync_log(f"{msg}\n{partial}")
         return SyncResponse(
             ok=False,
             message=msg,
@@ -332,19 +396,20 @@ def sync_obsidian() -> SyncResponse:
             output_dir=str(output_dir),
         )
     except OSError as exc:
+        _write_sync_log(f"OSError: {exc}")
         return SyncResponse(
             ok=False,
-            message=str(exc),
+            message=f"failed to start export: {exc}",
             log_path=str(log_path),
             output_dir=str(output_dir),
         )
 
     combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-    log_path.write_text(combined + "\n", encoding="utf-8")
+    _write_sync_log(f"exit={proc.returncode}\ncmd={' '.join(cmd)}\n\n{combined}")
     synced, skipped, empty, failed = _parse_export_done_line(combined)
 
     if proc.returncode != 0:
-        tail = "\n".join(combined.splitlines()[-8:]) if combined else f"exit {proc.returncode}"
+        tail = "\n".join(combined.splitlines()[-12:]) if combined else f"exit {proc.returncode}"
         return SyncResponse(
             ok=False,
             message=f"Sync failed (exit {proc.returncode}): {tail}",
@@ -356,11 +421,30 @@ def sync_obsidian() -> SyncResponse:
             output_dir=str(output_dir),
         )
 
-    if not re.search(r"done:\s*\d+\s*synced", combined):
-        # Script finished 0 but no done line — still treat as suspicious
+    has_done = bool(re.search(r"done:\s*\d+\s*synced", combined, flags=re.IGNORECASE))
+    if not has_done and synced == 0 and failed == 0:
         return SyncResponse(
             ok=False,
-            message=f"Sync finished without done line. Log: {log_path}",
+            message=f"Sync finished without a clear result line. See log: {log_path}",
+            synced=synced,
+            skipped=skipped,
+            empty=empty,
+            failed=failed,
+            log_path=str(log_path),
+            output_dir=str(output_dir),
+        )
+
+    if failed > 0:
+        return SyncResponse(
+            ok=False,
+            message=(
+                f"Partial sync: {synced} ok, {failed} failed "
+                f"(skipped {skipped}, empty {empty}). Log: {log_path}"
+            ),
+            synced=synced,
+            skipped=skipped,
+            empty=empty,
+            failed=failed,
             log_path=str(log_path),
             output_dir=str(output_dir),
         )
@@ -368,7 +452,7 @@ def sync_obsidian() -> SyncResponse:
     return SyncResponse(
         ok=True,
         message=(
-            f"Synced {synced} session(s) → {output_dir.name}/ "
+            f"Synced {synced} session(s) → {output_dir} "
             f"(skipped {skipped}, empty {empty}, failed {failed})"
         ),
         synced=synced,
@@ -394,8 +478,6 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def main() -> None:
-    import os
-
     import uvicorn
 
     port = int(os.environ.get("VESPER_HUB_PORT", store.settings.get("port", 7420)))
