@@ -1,0 +1,13 @@
+{
+  "name": "vesper-forge",
+  "version": "1.1.1",
+  "description": "Local Grok Build session browser with one-click Obsidian sync (VesperForge).",
+  "author": {
+    "name": "TX-220",
+    "url": "https://github.com/TX-220"
+  },
+  "homepage": "https://github.com/TX-220/vesper-forge",
+  "repository": "https://github.com/TX-220/vesper-forge",
+  "license": "MIT",
+  "keywords": ["vesperforge", "vesper-forge", "vesper forge"]
+}
