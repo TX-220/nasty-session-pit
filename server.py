@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 TX-220 with assistance from Grok (xAI) - https://x.ai
 """VesperForge — local session browser for Grok Build."""
+# Copyright (c) 2026 TX-220 with assistance from Grok (xAI) - https://x.ai
 
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ from lib.sessions import (
 STATIC_DIR = ROOT / "static"
 EXPORT_SCRIPT = Path.home() / "bin/grok-export-to-obsidian"
 DEFAULT_OBSIDIAN_DIR = Path.home() / "obsidian-vault/Second-Brain/Sessions/Vesper"
-SYNC_LOG_PATH = Path("/tmp/vesper-forge-obsidian-sync.log")
+# Keep legacy log name for existing tooling; also readable as VesperForge sync log.
+SYNC_LOG_PATH = Path("/tmp/vesper-hub-obsidian-sync.log")
 SYNC_TIMEOUT_SEC = 300
 
 logger = logging.getLogger("vesperforge")
@@ -53,7 +54,12 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="VesperForge", version="1.1.1", lifespan=lifespan)
+app = FastAPI(
+    title="VesperForge",
+    version="1.1.1",
+    lifespan=lifespan,
+    description="Local Grok Build session browser with Obsidian sync",
+)
 
 
 class AliasUpdate(BaseModel):
@@ -352,7 +358,7 @@ def _preflight_sync(output_dir: Path) -> str | None:
 
 @app.post("/api/sync")
 def sync_obsidian() -> SyncResponse:
-    """Run grok-export-to-obsidian --all --import-remote --force and wait for result."""
+    """Run grok-export-to-obsidian with preflight, logging, and clear error handling."""
     output_dir = DEFAULT_OBSIDIAN_DIR
     log_path = SYNC_LOG_PATH
 
@@ -366,7 +372,6 @@ def sync_obsidian() -> SyncResponse:
             output_dir=str(output_dir),
         )
 
-    # Prefer explicit python3 for non-executable scripts
     if EXPORT_SCRIPT.suffix == ".py":
         cmd = [sys.executable, str(EXPORT_SCRIPT), "--all", "--import-remote", "--force"]
     else:
@@ -381,65 +386,56 @@ def sync_obsidian() -> SyncResponse:
             env=_hub_env(),
             cwd=str(Path.home()),
         )
-    except subprocess.TimeoutExpired as exc:
-        partial = ""
-        if exc.stdout:
-            partial += str(exc.stdout)
-        if exc.stderr:
-            partial += "\n" + str(exc.stderr)
-        msg = f"Obsidian sync timed out after {SYNC_TIMEOUT_SEC}s"
-        _write_sync_log(f"{msg}\n{partial}")
-        return SyncResponse(
-            ok=False,
-            message=msg,
-            log_path=str(log_path),
-            output_dir=str(output_dir),
-        )
-    except OSError as exc:
-        _write_sync_log(f"OSError: {exc}")
-        return SyncResponse(
-            ok=False,
-            message=f"failed to start export: {exc}",
-            log_path=str(log_path),
-            output_dir=str(output_dir),
-        )
+        combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        _write_sync_log(f"exit={proc.returncode}\ncmd={' '.join(cmd)}\n\n{combined}")
+        synced, skipped, empty, failed = _parse_export_done_line(combined)
 
-    combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-    _write_sync_log(f"exit={proc.returncode}\ncmd={' '.join(cmd)}\n\n{combined}")
-    synced, skipped, empty, failed = _parse_export_done_line(combined)
+        if proc.returncode != 0:
+            tail = "\n".join(combined.splitlines()[-10:]) if combined else f"exit {proc.returncode}"
+            return SyncResponse(
+                ok=False,
+                message=f"Sync failed (exit {proc.returncode}): {tail}",
+                synced=synced,
+                skipped=skipped,
+                empty=empty,
+                failed=failed,
+                log_path=str(log_path),
+                output_dir=str(output_dir),
+            )
 
-    if proc.returncode != 0:
-        tail = "\n".join(combined.splitlines()[-12:]) if combined else f"exit {proc.returncode}"
-        return SyncResponse(
-            ok=False,
-            message=f"Sync failed (exit {proc.returncode}): {tail}",
-            synced=synced,
-            skipped=skipped,
-            empty=empty,
-            failed=failed,
-            log_path=str(log_path),
-            output_dir=str(output_dir),
-        )
+        has_done = bool(re.search(r"done:\s*\d+\s*synced", combined, flags=re.IGNORECASE))
+        if not has_done and synced == 0 and failed == 0:
+            return SyncResponse(
+                ok=False,
+                message=f"Sync finished without a clear result line. See log: {log_path}",
+                synced=synced,
+                skipped=skipped,
+                empty=empty,
+                failed=failed,
+                log_path=str(log_path),
+                output_dir=str(output_dir),
+            )
 
-    has_done = bool(re.search(r"done:\s*\d+\s*synced", combined, flags=re.IGNORECASE))
-    if not has_done and synced == 0 and failed == 0:
-        return SyncResponse(
-            ok=False,
-            message=f"Sync finished without a clear result line. See log: {log_path}",
-            synced=synced,
-            skipped=skipped,
-            empty=empty,
-            failed=failed,
-            log_path=str(log_path),
-            output_dir=str(output_dir),
-        )
+        if failed > 0:
+            return SyncResponse(
+                ok=False,
+                message=(
+                    f"Partial sync: {synced} ok, {failed} failed "
+                    f"(skipped {skipped}, empty {empty}). Log: {log_path}"
+                ),
+                synced=synced,
+                skipped=skipped,
+                empty=empty,
+                failed=failed,
+                log_path=str(log_path),
+                output_dir=str(output_dir),
+            )
 
-    if failed > 0:
         return SyncResponse(
-            ok=False,
+            ok=True,
             message=(
-                f"Partial sync: {synced} ok, {failed} failed "
-                f"(skipped {skipped}, empty {empty}). Log: {log_path}"
+                f"Synced {synced} session(s) → {output_dir.name}/ "
+                f"(skipped {skipped}, empty {empty}, failed {failed})"
             ),
             synced=synced,
             skipped=skipped,
@@ -449,19 +445,25 @@ def sync_obsidian() -> SyncResponse:
             output_dir=str(output_dir),
         )
 
-    return SyncResponse(
-        ok=True,
-        message=(
-            f"Synced {synced} session(s) → {output_dir} "
-            f"(skipped {skipped}, empty {empty}, failed {failed})"
-        ),
-        synced=synced,
-        skipped=skipped,
-        empty=empty,
-        failed=failed,
-        log_path=str(log_path),
-        output_dir=str(output_dir),
-    )
+    except subprocess.TimeoutExpired as exc:
+        partial = f"{exc.stdout or ''}\n{exc.stderr or ''}".strip()
+        msg = f"Obsidian sync timed out after {SYNC_TIMEOUT_SEC}s"
+        _write_sync_log(f"{msg}\n{partial}")
+        return SyncResponse(
+            ok=False,
+            message=msg,
+            log_path=str(log_path),
+            output_dir=str(output_dir),
+        )
+    except Exception as exc:
+        # Catch-all so the UI always gets a structured failure (Lilith review note)
+        _write_sync_log(f"Exception: {exc}")
+        return SyncResponse(
+            ok=False,
+            message=f"Sync error: {exc}",
+            log_path=str(log_path),
+            output_dir=str(output_dir),
+        )
 
 
 @app.get("/favicon.ico")
