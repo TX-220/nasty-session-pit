@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VesperForge</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <div id="offline-banner" class="offline-banner hidden">
+      Forge server offline — run <code>vesper-forge</code> or wait for autostart
+    </div>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-icon">✦</span>
+        <h1>VesperForge</h1>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-refresh" class="btn btn-secondary" title="Import remote sessions and reload list">Refresh</button>
+        <button id="btn-new" class="btn btn-primary" title="New session in tmux">New</button>
+        <button id="btn-sync" class="btn btn-secondary" title="Run: grok-export-to-obsidian --all --import-remote --force → Second-Brain/Sessions/Vesper/">Sync to Obsidian</button>
+      </div>
+    </header>
+
+    <div class="main">
+      <div class="sidebar-panel" id="sidebar-panel">
+        <aside class="sidebar">
+          <div class="search-wrap">
+            <input id="search" type="search" placeholder="Search sessions..." autocomplete="off" spellcheck="false">
+          </div>
+          <div id="session-list" class="session-list"></div>
+          <div class="sidebar-footer">
+            <div class="sidebar-footer-row">
+              <label class="hide-empty-toggle" title="Hide sessions with no conversation">
+                <input type="checkbox" id="hide-empty">
+                <span>Hide empty</span>
+              </label>
+              <button
+                id="btn-purge-empty"
+                class="btn-purge-empty"
+                type="button"
+                disabled
+                title="Permanently delete all empty sessions from ~/.grok/sessions (grok sessions delete)"
+              >Purge empty</button>
+            </div>
+            <span id="session-count" class="session-count"></span>
+          </div>
+        </aside>
+        <div class="sidebar-resizer" id="sidebar-resizer" title="Drag to resize sidebar" aria-label="Resize sidebar"></div>
+      </div>
+
+      <main class="detail" id="detail">
+        <div class="empty-state">
+          <p>Select a session from the sidebar</p>
+        </div>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
