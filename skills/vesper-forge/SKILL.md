@@ -40,6 +40,16 @@ vesper-forge --stop
 | Refresh | `grok import` + reload session list |
 | New | Open a new Grok session in tmux |
 | Sync to Obsidian | `grok-export-to-obsidian --all --import-remote --force` |
+| All Vesper / Lilith Canvas | Overview canvas export |
+
+### Session features
+
+- **Direct genre:** List/detail dropdown; user-managed catalog (**Manage** in sidebar); empty = Unset (filter: Uncategorized); `vesper-hub.json` → `genre_catalog` + `genres`
+- **Related Lilith:** On Vesper session detail — add id/URL + optional title; multi; Unlink. Stored in `vesper-hub.json` → `related_lilith[session_id]`
+- **API:** `POST/DELETE /api/sessions/{id}/lilith`
+- **All-sessions overview Canvas:** Top bar **All Vesper Canvas** / **All Lilith Canvas**
+- **Delete:** `grok sessions delete` with local-dir fallback on remote/network failure
+- **Logical sessions:** retired — no UI; writes return 410; data retained read-only
 
 ## Obsidian export (CLI equivalent)
 
@@ -61,6 +71,16 @@ Default output directory:
 - Multi-user / remote hosting
 - Replacing the Grok TUI
 - Non-Grok session sources
+
+## Obsidian sync (genre folders)
+
+UI **Sync to Obsidian** runs `scripts/grok-export-to-obsidian` (or `~/bin/grok-export-to-obsidian`):
+
+```bash
+scripts/grok-export-to-obsidian --all --import-remote --force
+```
+
+Notes land under `Sessions/Vesper/<Genre>/` (or `Uncategorized/`).
 
 ## Repo
 

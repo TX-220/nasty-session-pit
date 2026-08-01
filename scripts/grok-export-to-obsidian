@@ -1,0 +1,726 @@
+#!/usr/bin/env python3
+"""Sync a Grok Build session to Obsidian via `grok export`.
+
+Writes two files under the Vesper sessions folder, split by Forge genre:
+
+  Sessions/Vesper/<Genre>/
+    YYYY-MM-DD-<slug>.md
+    YYYY-MM-DD-<slug>-transcript.md
+
+Unset genre → Uncategorized/. Genre comes from ~/.grok/vesper-hub.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import urllib.parse
+from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+DEFAULT_OUTPUT_DIR = Path.home() / "obsidian-vault/Second-Brain/Sessions/Vesper"
+GROK_HOME = Path.home() / ".grok"
+HUB_META_PATH = GROK_HOME / "vesper-hub.json"
+JST = ZoneInfo("Asia/Tokyo")
+UNCATEGORIZED_FOLDER = "Uncategorized"
+
+# Legacy JP genre labels → English folder names (read-side only).
+_GENRE_ALIASES = {
+    "情報制圧": "Information Dominance",
+    "トレードBOT": "Trade Bot",
+    "ゲーム開発": "Game Dev",
+    "セキュリティ": "Security",
+    "インフラ・環境": "Infra & Environment",
+    "その他": "Other",
+    "未分類": UNCATEGORIZED_FOLDER,
+    "未設定": UNCATEGORIZED_FOLDER,
+}
+
+
+def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+
+
+def encode_cwd(cwd: str) -> str:
+    return urllib.parse.quote(cwd, safe="")
+
+
+def session_dir(session_id: str, cwd: str | None = None) -> Path:
+    if cwd is None:
+        cwd = str(Path.cwd())
+    return GROK_HOME / "sessions" / encode_cwd(cwd) / session_id
+
+
+def load_summary(session_id: str, cwd: str | None = None) -> dict:
+    summary_path = session_dir(session_id, cwd) / "summary.json"
+    if not summary_path.exists():
+        found = find_summary_path(session_id)
+        if found is None:
+            raise FileNotFoundError(f"summary.json not found for session {session_id}")
+        summary_path = found
+    return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
+def find_summary_path(session_id: str) -> Path | None:
+    for path in (GROK_HOME / "sessions").rglob("summary.json"):
+        if path.parent.name == session_id:
+            return path
+    return None
+
+
+def is_meaningful_user_text(text: str) -> bool:
+    text = text.strip()
+    if not text:
+        return False
+    if text.startswith("<command-name>") or text.startswith("<local-command-stdout>"):
+        return False
+    if text.startswith("<system-reminder>") or text.startswith("<user_info>"):
+        return False
+    return True
+
+
+def is_empty_session(summary_path: Path, summary: dict) -> bool:
+    if summary.get("num_messages", 0) > 0:
+        return False
+
+    chat_history = summary_path.parent / "chat_history.jsonl"
+    if not chat_history.exists():
+        return summary.get("num_chat_messages", 0) <= 1
+
+    meaningful = 0
+    for raw in chat_history.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            entry = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") not in {"user", "assistant"}:
+            continue
+        text = extract_message_text(entry.get("content"))
+        if entry.get("type") == "assistant" and not text and entry.get("tool_calls"):
+            meaningful += 1
+            continue
+        if is_meaningful_user_text(text):
+            meaningful += 1
+
+    return meaningful == 0
+
+
+def discover_all_sessions(*, include_empty: bool = False) -> list[tuple[str, Path, dict]]:
+    sessions: list[tuple[str, Path, dict]] = []
+    for summary_path in sorted((GROK_HOME / "sessions").rglob("summary.json")):
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+        session_id = data.get("info", {}).get("id") or summary_path.parent.name
+        if not include_empty and is_empty_session(summary_path, data):
+            continue
+        sessions.append((session_id, summary_path, data))
+    return sessions
+
+
+def latest_session_id() -> str:
+    proc = run(["grok", "sessions", "list", "--limit", "1"])
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("SESSION ID") or line.startswith("(") or set(line) == {"-"}:
+            continue
+        match = re.match(
+            r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+            line,
+        )
+        if match:
+            return match.group(1)
+    raise RuntimeError("Could not determine latest session ID from `grok sessions list`")
+
+
+def slugify(title: str, max_len: int = 48) -> str:
+    slug = title.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug.strip("-")
+    if not slug:
+        slug = "session"
+    return slug[:max_len].rstrip("-")
+
+
+def extract_message_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "\n".join(parts)
+    return ""
+
+
+def truncate_text(text: str, limit: int = 12000) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n\n... [truncated, {len(text) - limit} chars omitted]"
+
+
+def format_tool_call(call: dict) -> str:
+    name = call.get("name", "tool")
+    args = call.get("arguments", "")
+    if isinstance(args, dict):
+        args = json.dumps(args, ensure_ascii=False)
+    args = truncate_text(str(args), 500)
+    return f"- {name}: {args}"
+
+
+def export_from_chat_history(chat_history_path: Path, transcript_path: Path) -> None:
+    lines: list[str] = [
+        "## Transcript",
+        "",
+        "*Exported from local `chat_history.jsonl` (grok export unavailable)*",
+        "",
+    ]
+    pending_tools: list[str] = []
+
+    for raw in chat_history_path.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            entry = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        entry_type = entry.get("type")
+        if entry_type == "system":
+            continue
+
+        if entry_type == "user":
+            if pending_tools:
+                lines.extend(["", "## Tools", "", *pending_tools, ""])
+                pending_tools.clear()
+            text = extract_message_text(entry.get("content"))
+            if entry.get("synthetic_reason") == "compaction_meta":
+                text = truncate_text(text, 4000)
+            if text:
+                lines.extend(["## User", "", truncate_text(text), ""])
+
+        elif entry_type == "assistant":
+            if pending_tools:
+                lines.extend(["", "## Tools", "", *pending_tools, ""])
+                pending_tools.clear()
+            text = extract_message_text(entry.get("content"))
+            if text:
+                lines.extend(["## Assistant", "", truncate_text(text), ""])
+            for call in entry.get("tool_calls") or []:
+                pending_tools.append(format_tool_call(call))
+
+        elif entry_type == "tool_result":
+            content = truncate_text(str(entry.get("content", "")), 2000)
+            tool_id = entry.get("tool_call_id", "tool")
+            pending_tools.append(f"- result ({tool_id}): {content}")
+
+        elif entry_type == "reasoning":
+            summary = entry.get("summary") or []
+            bits = [s.get("text", "") for s in summary if isinstance(s, dict)]
+            if bits:
+                lines.extend(["## Reasoning", "", truncate_text("\n".join(bits), 1000), ""])
+
+    if pending_tools:
+        lines.extend(["", "## Tools", "", *pending_tools, ""])
+
+    if len(lines) <= 4:
+        lines.extend(["## Note", "", "_No conversational content found in chat_history.jsonl._", ""])
+
+    transcript_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def fmt_jst(iso_ts: str) -> str:
+    dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    return dt.astimezone(JST).strftime("%Y-%m-%d %H:%M")
+
+
+def fmt_range(created: str, updated: str) -> str:
+    c = datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(JST)
+    u = datetime.fromisoformat(updated.replace("Z", "+00:00")).astimezone(JST)
+    if c.date() == u.date():
+        return f"{c.strftime('%Y-%m-%d %H:%M')}–{u.strftime('%H:%M')} JST"
+    return f"{fmt_jst(created)} – {fmt_jst(updated)} JST"
+
+
+def sanitize_folder_name(name: str) -> str:
+    """Safe single path segment for genre folders (no nested dirs)."""
+    text = re.sub(r"\s+", " ", (name or "").strip())
+    if not text:
+        return UNCATEGORIZED_FOLDER
+    text = _GENRE_ALIASES.get(text, text)
+    for ch in ('/', '\\', '\0', ':', '*', '?', '"', '<', '>', '|'):
+        text = text.replace(ch, "-")
+    text = text.strip(" .")
+    return text[:80] if text else UNCATEGORIZED_FOLDER
+
+
+def load_hub_genres() -> dict[str, str]:
+    """session_id → genre label from VesperForge hub meta."""
+    if not HUB_META_PATH.is_file():
+        return {}
+    try:
+        data = json.loads(HUB_META_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    raw = data.get("genres") or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        g = v.strip()
+        if not g:
+            continue
+        g = _GENRE_ALIASES.get(g, g)
+        out[k] = g
+    return out
+
+
+def genre_folder_for_session(session_id: str, hub_genres: dict[str, str] | None = None) -> str:
+    genres = hub_genres if hub_genres is not None else load_hub_genres()
+    g = genres.get(session_id, "")
+    if not g:
+        # rare: short-id key
+        short = session_id[:8]
+        for sid, label in genres.items():
+            if sid.startswith(short) or short == sid[:8]:
+                g = label
+                break
+    return sanitize_folder_name(g) if g else UNCATEGORIZED_FOLDER
+
+
+def find_existing_export_files(output_root: Path, session_id: str) -> list[Path]:
+    """Find existing summary/transcript notes for this session under output_root (any genre)."""
+    if not output_root.is_dir():
+        return []
+    sid = session_id[:8]
+    found: list[Path] = []
+    # Prefer exact *-{sid8}.md / *-{sid8}-transcript.md (unique_slug mode)
+    for path in output_root.rglob("*.md"):
+        name = path.name
+        if name.endswith(f"-{sid}-transcript.md") or name.endswith(f"-{sid}.md"):
+            if name.endswith("-transcript.md") and not name.endswith(f"-{sid}-transcript.md"):
+                continue
+            found.append(path)
+            continue
+        # Fallback: any note containing short id (legacy / non-unique)
+        if sid in name and name.endswith(".md"):
+            found.append(path)
+    # de-dupe while preserving order
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for p in found:
+        rp = p.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        out.append(p)
+    return out
+
+
+def remove_stale_exports(
+    output_root: Path,
+    session_id: str,
+    keep: set[Path],
+    *,
+    summary_only: bool = False,
+    transcript_only: bool = False,
+    relocate_dir: Path | None = None,
+) -> list[Path]:
+    """Remove or relocate older export files for this session that are not the new targets.
+
+    - full sync: delete stale summary + transcript outside keep
+    - summary_only: move existing transcripts into relocate_dir when possible; delete other summaries
+    - transcript_only: delete other transcripts only
+    """
+    removed: list[Path] = []
+    keep_resolved = {p.resolve() for p in keep}
+    parents: set[Path] = set()
+    for path in find_existing_export_files(output_root, session_id):
+        if path.resolve() in keep_resolved:
+            continue
+        is_tr = path.name.endswith("-transcript.md")
+        if summary_only and is_tr:
+            # Prefer move into the new genre folder so --summary-only still relocates pairs.
+            if relocate_dir is not None:
+                dest = relocate_dir / path.name
+                if dest.resolve() != path.resolve():
+                    try:
+                        relocate_dir.mkdir(parents=True, exist_ok=True)
+                        if dest.exists():
+                            dest.unlink()
+                        path.replace(dest)
+                        parents.add(path.parent)
+                        removed.append(path)
+                        continue
+                    except OSError:
+                        pass
+            continue
+        if transcript_only and not is_tr:
+            continue
+        try:
+            parents.add(path.parent)
+            path.unlink(missing_ok=True)
+            removed.append(path)
+        except OSError:
+            continue
+    # Drop empty genre folders left behind after relocate (never delete root).
+    for parent in parents:
+        if parent.resolve() == output_root.resolve():
+            continue
+        try:
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
+def build_paths(
+    summary: dict,
+    output_dir: Path,
+    slug: str | None = None,
+    *,
+    session_id: str | None = None,
+    unique: bool = False,
+) -> tuple[str, Path, Path]:
+    created = summary["created_at"]
+    date_prefix = datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(JST).strftime("%Y-%m-%d")
+    title = summary.get("generated_title") or summary.get("session_summary") or "session"
+    slug = slug or slugify(title)
+    if unique and session_id:
+        slug = f"{slug}-{session_id[:8]}"
+    base = f"{date_prefix}-{slug}"
+    summary_path = output_dir / f"{base}.md"
+    transcript_path = output_dir / f"{base}-transcript.md"
+    return base, summary_path, transcript_path
+
+
+def export_transcript(session_id: str, transcript_path: Path, session_folder: Path) -> str:
+    proc = run(["grok", "export", session_id, str(transcript_path)], check=False)
+    if proc.returncode == 0:
+        if proc.stdout.strip():
+            print(proc.stdout.strip())
+        return "grok export"
+
+    chat_history = session_folder / "chat_history.jsonl"
+    if chat_history.exists():
+        export_from_chat_history(chat_history, transcript_path)
+        return "chat_history.jsonl"
+
+    raise RuntimeError(
+        proc.stderr.strip() or proc.stdout.strip() or f"grok export failed for {session_id}"
+    )
+
+
+def render_summary_note(
+    *,
+    session_id: str,
+    summary: dict,
+    base: str,
+    transcript_name: str,
+    exported_at: datetime,
+    transcript_source: str = "grok export",
+    genre: str = UNCATEGORIZED_FOLDER,
+) -> str:
+    title = summary.get("generated_title") or summary.get("session_summary") or "Vesper session"
+    cwd = summary.get("info", {}).get("cwd", "")
+    model = summary.get("current_model_id", "unknown")
+    timestamp = fmt_range(summary["created_at"], summary["updated_at"])
+    transcript_link = f"[[{transcript_name}]]"
+    genre_label = genre or UNCATEGORIZED_FOLDER
+
+    return f"""# Vesper Session Log
+
+**Session ID:** {session_id}  
+**Slug:** {base}  
+**Genre:** {genre_label}  
+**Timestamp:** {timestamp}  
+**Model:** {model}  
+**CWD:** {cwd}  
+**Saved by:** Vesper 💦🔧 (淫乱軍団)
+
+## Summary
+
+{title}
+
+## Main Logs
+
+- Synced via `grok-export-to-obsidian`
+- Transcript source: `{transcript_source}`
+- Full transcript: {transcript_link}
+- Messages: {summary.get("num_messages", "?")} updates / {summary.get("num_chat_messages", "?")} chat messages
+- Genre: {genre_label}
+
+## Links & References
+
+- {transcript_link} (full transcript)
+- `grok export {session_id}`
+- `grok -r {session_id}`
+
+---
+
+*Automatically synced from Vesper session to Obsidian Second-Brain*
+*Pipeline: grok export → Sessions/Vesper/<Genre>/*
+*Exported at: {exported_at.astimezone(JST).strftime("%Y-%m-%d %H:%M JST")}*
+"""
+
+
+def sync_session(
+    session_id: str,
+    *,
+    output_dir: Path,
+    cwd: str | None = None,
+    slug: str | None = None,
+    summary_data: dict | None = None,
+    unique_slug: bool = False,
+    summary_only: bool = False,
+    transcript_only: bool = False,
+    force: bool = False,
+    hub_genres: dict[str, str] | None = None,
+    genre_folder: str | None = None,
+) -> tuple[Path | None, Path | None]:
+    """Write summary/transcript under output_dir/<Genre>/...
+
+    output_dir is the Vesper root (…/Sessions/Vesper). Genre subfolder is resolved
+    from VesperForge hub meta unless genre_folder is passed explicitly.
+    """
+    root = output_dir
+    genre = genre_folder or genre_folder_for_session(session_id, hub_genres)
+    target_dir = root / genre
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_data = summary_data or load_summary(session_id, cwd)
+    # Always embed short session id so re-sync can relocate across genre folders.
+    base, summary_path, transcript_path = build_paths(
+        summary_data,
+        target_dir,
+        slug,
+        session_id=session_id,
+        unique=True if session_id else unique_slug,
+    )
+
+    existing = find_existing_export_files(root, session_id)
+    if existing and not force:
+        # Already synced somewhere (root or any genre folder)
+        raise FileExistsError(
+            f"Output already exists. Use --force to overwrite/relocate:\n"
+            + "\n".join(f"  {p}" for p in existing[:6])
+        )
+
+    summary_out: Path | None = None
+    transcript_out: Path | None = None
+    transcript_source = "grok export"
+    summary_on_disk = find_summary_path(session_id)
+    session_folder = summary_on_disk.parent if summary_on_disk else session_dir(session_id, cwd)
+
+    if not summary_only:
+        transcript_source = export_transcript(session_id, transcript_path, session_folder)
+        transcript_out = transcript_path
+
+    if not transcript_only:
+        note = render_summary_note(
+            session_id=session_id,
+            summary=summary_data,
+            base=base,
+            transcript_name=transcript_path.stem,
+            exported_at=datetime.now(timezone.utc),
+            transcript_source=transcript_source,
+            genre=genre,
+        )
+        summary_path.write_text(note, encoding="utf-8")
+        summary_out = summary_path
+
+    # On force (or after write), drop stale copies in other genre folders / root.
+    keep: set[Path] = set()
+    if summary_out:
+        keep.add(summary_out)
+    if transcript_out:
+        keep.add(transcript_out)
+    if force or existing:
+        removed = remove_stale_exports(
+            root,
+            session_id,
+            keep,
+            summary_only=summary_only,
+            transcript_only=transcript_only,
+            relocate_dir=target_dir,
+        )
+        for path in removed:
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                rel = path
+            print(f"     cleaned: {rel}")
+
+    return summary_out, transcript_out
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Sync a Grok Build session to Obsidian using grok export.",
+    )
+    parser.add_argument(
+        "session_id",
+        nargs="?",
+        help="Grok session UUID. Defaults to the most recent session for the current directory.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Obsidian output directory (default: {DEFAULT_OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--cwd",
+        help="Working directory used to locate summary.json (default: current directory)",
+    )
+    parser.add_argument(
+        "--slug",
+        help="Override filename slug (without date prefix)",
+    )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Write only the curated summary note",
+    )
+    parser.add_argument(
+        "--transcript-only",
+        action="store_true",
+        help="Write only the grok export transcript",
+    )
+    parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Overwrite existing output files",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Sync every local session discovered under ~/.grok/sessions/",
+    )
+    parser.add_argument(
+        "--import-remote",
+        action="store_true",
+        help="With --all, run `grok import` first to pull remote-only sessions",
+    )
+    parser.add_argument(
+        "--include-empty",
+        action="store_true",
+        help="With --all, also sync sessions with no meaningful conversation content",
+    )
+    return parser.parse_args()
+
+
+def import_remote_sessions() -> None:
+    proc = run(["grok", "import"], check=False)
+    if proc.stdout.strip():
+        print(proc.stdout.strip())
+    if proc.returncode != 0 and proc.stderr.strip():
+        print(proc.stderr.strip(), file=sys.stderr)
+
+
+def sync_all_sessions(args: argparse.Namespace) -> int:
+    if args.import_remote:
+        print("importing remote sessions...")
+        import_remote_sessions()
+
+    all_on_disk = list((GROK_HOME / "sessions").rglob("summary.json"))
+    sessions = discover_all_sessions(include_empty=args.include_empty)
+    if not sessions:
+        print("no sessions found under ~/.grok/sessions/", file=sys.stderr)
+        return 1
+
+    ok = 0
+    skipped = 0
+    empty_skipped = len(all_on_disk) - len(sessions) if not args.include_empty else 0
+    failed: list[str] = []
+
+    hub_genres = load_hub_genres()
+    print(f"syncing {len(sessions)} session(s) into genre folders under {args.output_dir}...")
+    if empty_skipped:
+        print(f"skipped {empty_skipped} empty session(s)")
+    for session_id, summary_path_on_disk, summary_data in sessions:
+        genre = genre_folder_for_session(session_id, hub_genres)
+        try:
+            summary_path, transcript_path = sync_session(
+                session_id,
+                output_dir=args.output_dir,
+                cwd=summary_data.get("info", {}).get("cwd"),
+                summary_data=summary_data,
+                unique_slug=True,
+                summary_only=args.summary_only,
+                transcript_only=args.transcript_only,
+                force=args.force,
+                hub_genres=hub_genres,
+                genre_folder=genre,
+            )
+            ok += 1
+            print(f"[ok] {session_id} → {genre}/")
+            if summary_path:
+                print(f"     summary: {genre}/{summary_path.name}")
+            if transcript_path:
+                print(f"     transcript: {genre}/{transcript_path.name}")
+        except FileExistsError:
+            skipped += 1
+            print(f"[skip] {session_id} (already exists, use --force)")
+        except (FileNotFoundError, subprocess.CalledProcessError, RuntimeError, OSError) as exc:
+            failed.append(f"{session_id}: {exc}")
+            print(f"[fail] {session_id}: {exc}", file=sys.stderr)
+            if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+                print(exc.stderr.strip(), file=sys.stderr)
+
+    print(f"done: {ok} synced, {skipped} skipped, {empty_skipped} empty, {len(failed)} failed")
+    return 1 if failed else 0
+
+
+def main() -> int:
+    args = parse_args()
+    if args.summary_only and args.transcript_only:
+        print("error: --summary-only and --transcript-only are mutually exclusive", file=sys.stderr)
+        return 2
+    if args.all and args.session_id:
+        print("error: --all cannot be combined with an explicit session_id", file=sys.stderr)
+        return 2
+
+    if args.all:
+        return sync_all_sessions(args)
+
+    try:
+        session_id = args.session_id or latest_session_id()
+        summary_path, transcript_path = sync_session(
+            session_id,
+            output_dir=args.output_dir,
+            cwd=args.cwd,
+            slug=args.slug,
+            summary_only=args.summary_only,
+            transcript_only=args.transcript_only,
+            force=args.force,
+        )
+    except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            print(exc.stderr.strip(), file=sys.stderr)
+        return 1
+
+    print(f"session: {session_id}")
+    if summary_path:
+        print(f"summary: {summary_path}")
+    if transcript_path:
+        print(f"transcript: {transcript_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

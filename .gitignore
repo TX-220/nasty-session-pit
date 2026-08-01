@@ -14,3 +14,6 @@ venv/
 *.egg-info/
 dist/
 build/
+
+# Local research / personal worktrees — not part of public VesperForge
+tradebot/

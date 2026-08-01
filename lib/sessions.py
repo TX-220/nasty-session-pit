@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -10,11 +12,75 @@ from typing import Any
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
+from lib.genres import (
+    DEFAULT_GENRE_CATALOG,
+    DEFAULT_GENRE_COLORS,
+    RESERVED_GENRE_NAMES,
+    UNCATEGORIZED_COLOR,
+    apply_genre_alias,
+    catalog_names,
+    clean_genre_name,
+    color_map,
+    default_color_for,
+    merge_orphan_genres,
+    normalize_color,
+    normalize_session_genre as _normalize_session_genre,
+    parse_genre_catalog,
+    validate_new_genre_name,
+)
+from lib.logical_sessions import (
+    GENRES,
+    LinkedRef,
+    LogicalSession,
+    dump_logical_sessions,
+    load_logical_sessions,
+    unlink_vesper_everywhere,
+)
+
 GROK_HOME = Path.home() / ".grok"
 HUB_META_PATH = GROK_HOME / "vesper-hub.json"
 LEGACY_ALIASES_PATH = GROK_HOME / "session-aliases.json"
 OBSIDIAN_SESSIONS_DIR = Path.home() / "obsidian-vault/Second-Brain/Sessions/Vesper"
 JST = ZoneInfo("Asia/Tokyo")
+
+
+def normalize_session_genre(
+    genre: str | None,
+    catalog: list[str] | list[dict[str, str]] | tuple[str, ...] | None = None,
+) -> str:
+    """Direct Vesper genre: empty = unset; must be in the user catalog (no default to Other)."""
+    if catalog is not None and catalog and isinstance(catalog[0], dict):
+        names = catalog_names(catalog)
+    else:
+        names = list(catalog) if catalog is not None else None
+    return _normalize_session_genre(genre, names)
+
+
+def load_related_lilith_map(raw: Any) -> dict[str, list[LinkedRef]]:
+    """Parse session_id -> related Lilith refs from hub meta."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[LinkedRef]] = {}
+    for sid, items in raw.items():
+        if not isinstance(sid, str) or not sid.strip():
+            continue
+        refs: list[LinkedRef] = []
+        if isinstance(items, list):
+            for item in items:
+                ref = LinkedRef.from_dict(item)
+                if ref and not any(r.id == ref.id for r in refs):
+                    refs.append(ref)
+        if refs:
+            out[sid] = refs
+    return out
+
+
+def dump_related_lilith_map(data: dict[str, list[LinkedRef]]) -> dict[str, list[dict[str, str]]]:
+    return {
+        sid: [r.to_dict() for r in refs]
+        for sid, refs in sorted(data.items())
+        if refs
+    }
 
 
 @dataclass
@@ -40,6 +106,9 @@ class SessionRecord:
     is_empty: bool = False
     summary: str = ""
     summary_source: str = ""
+    genre: str = ""  # direct genre (empty = unset)
+    # Related Lilith (リラ / Grok chat) refs — manual only, freeform id/url + optional title
+    related_lilith: list[LinkedRef] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +117,9 @@ class SessionRecord:
             "title": self.title,
             "display_name": self.display_name,
             "alias": self.alias,
+            "genre": self.genre,
+            "related_lilith": [r.to_dict() for r in self.related_lilith],
+            "related_lilith_count": len(self.related_lilith),
             "created": self.created,
             "updated": self.updated,
             "updated_display": self.updated_display,
@@ -270,7 +342,7 @@ def build_heuristic_summary(summary_path: Path, data: dict, limit: int = 3200) -
         parts.append(title)
 
     if first_query and first_query != title:
-        parts.append(f"開始: {truncate_text(first_query, 420)}")
+        parts.append(f"Started: {truncate_text(first_query, 420)}")
 
     recent_users: list[str] = []
     seen: set[str] = set()
@@ -285,11 +357,11 @@ def build_heuristic_summary(summary_path: Path, data: dict, limit: int = 3200) -
     recent_users.reverse()
 
     if recent_users and (len(recent_users) > 1 or recent_users[0] != first_query):
-        parts.append("最近の話題:")
+        parts.append("Recent topics:")
         parts.extend(f"• {snippet}" for snippet in recent_users)
 
     if last_assistant:
-        parts.append(f"最新の応答:\n{truncate_text(last_assistant, 1000)}")
+        parts.append(f"Latest response:\n{truncate_text(last_assistant, 1000)}")
 
     if not parts:
         return title
@@ -341,14 +413,19 @@ def extract_preview(summary_path: Path, limit: int = 120) -> str:
 
 
 def find_obsidian_note(session_id: str) -> str | None:
+    """Locate curated summary note under Sessions/Vesper/** (genre subfolders included)."""
     if not OBSIDIAN_SESSIONS_DIR.exists():
         return None
     sid = short_id(session_id)
-    matches = sorted(OBSIDIAN_SESSIONS_DIR.glob(f"*-{sid}.md"))
+    # Genre folders: …/Vesper/<Genre>/YYYY-MM-DD-…-<sid8>.md
+    matches = sorted(OBSIDIAN_SESSIONS_DIR.rglob(f"*-{sid}.md"))
     if not matches:
-        matches = sorted(OBSIDIAN_SESSIONS_DIR.glob(f"*{sid}*.md"))
+        matches = sorted(OBSIDIAN_SESSIONS_DIR.rglob(f"*{sid}*.md"))
     for path in matches:
         if path.name.endswith("-transcript.md"):
+            continue
+        # Prefer notes inside a genre folder; skip top-level canvas/index if any
+        if path.suffix != ".md":
             continue
         return str(path)
     return None
@@ -358,6 +435,14 @@ def find_obsidian_note(session_id: str) -> str | None:
 class HubStore:
     aliases: dict[str, str] = field(default_factory=dict)
     project_aliases: dict[str, str] = field(default_factory=dict)
+    # Direct per-Vesper-session genre (session_id -> catalog label). Empty/missing = unset.
+    genres: dict[str, str] = field(default_factory=dict)
+    # User-managed genre list: [{name, color}, ...] (order preserved).
+    genre_catalog: list[dict[str, str]] = field(
+        default_factory=lambda: parse_genre_catalog(None)
+    )
+    # Direct per-Vesper related Lilith session refs (manual id/url + optional title).
+    related_lilith: dict[str, list[LinkedRef]] = field(default_factory=dict)
     pinned: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(
         default_factory=lambda: {
@@ -365,6 +450,8 @@ class HubStore:
             "hide_empty": True,
         }
     )
+    # Legacy: logical sessions kept on disk; UI no longer exposes create/manage.
+    logical_sessions: list[LogicalSession] = field(default_factory=list)
 
     @classmethod
     def load(cls) -> HubStore:
@@ -373,27 +460,173 @@ class HubStore:
             return cls()
         data = json.loads(HUB_META_PATH.read_text(encoding="utf-8"))
         raw_settings = data.get("settings") or {}
+        catalog = parse_genre_catalog(data.get("genre_catalog"))
+
+        # First pass: collect raw session genre values (with alias map) to merge orphans.
+        raw_genres = data.get("genres") or {}
+        raw_values: list[str] = []
+        if isinstance(raw_genres, dict):
+            for v in raw_genres.values():
+                if isinstance(v, str) and v.strip():
+                    raw_values.append(apply_genre_alias(v))
+        catalog = merge_orphan_genres(catalog, raw_values)
+
+        genres: dict[str, str] = {}
+        if isinstance(raw_genres, dict):
+            for k, v in raw_genres.items():
+                if not isinstance(k, str):
+                    continue
+                ng = normalize_session_genre(v if isinstance(v, str) else "", catalog)
+                if ng:
+                    genres[k] = ng
         return cls(
             aliases={k: v for k, v in (data.get("aliases") or {}).items() if isinstance(v, str)},
             project_aliases={
                 k: v for k, v in (data.get("project_aliases") or {}).items() if isinstance(v, str)
             },
+            genres=genres,
+            genre_catalog=catalog,
+            related_lilith=load_related_lilith_map(data.get("related_lilith")),
             pinned=[p for p in (data.get("pinned") or []) if isinstance(p, str)],
             settings={
                 "port": int(raw_settings.get("port", 7420)),
                 "hide_empty": bool(raw_settings.get("hide_empty", True)),
             },
+            logical_sessions=load_logical_sessions(data.get("logical_sessions")),
         )
 
     def save(self) -> None:
+        """Atomic write so a crash mid-save cannot wipe meta."""
         HUB_META_PATH.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "aliases": dict(sorted(self.aliases.items())),
             "project_aliases": dict(sorted(self.project_aliases.items())),
+            "genres": dict(sorted(self.genres.items())),
+            "genre_catalog": [
+                {"name": e["name"], "color": e["color"]} for e in self.genre_catalog
+            ],
+            "related_lilith": dump_related_lilith_map(self.related_lilith),
             "pinned": self.pinned,
             "settings": self.settings,
+            "logical_sessions": dump_logical_sessions(self.logical_sessions),
         }
-        HUB_META_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        tmp = HUB_META_PATH.with_suffix(".json.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, HUB_META_PATH)
+
+    def _genre_names(self) -> list[str]:
+        return catalog_names(self.genre_catalog)
+
+    def _find_genre_entry(self, name: str) -> dict[str, str] | None:
+        target = apply_genre_alias(name) or clean_genre_name(name)
+        if not target:
+            return None
+        for e in self.genre_catalog:
+            if e["name"] == target:
+                return e
+        t_l = target.lower()
+        for e in self.genre_catalog:
+            if e["name"].lower() == t_l:
+                return e
+        return None
+
+    def get_genre_catalog(self) -> list[str]:
+        """Ordered genre names (backward-compatible)."""
+        return self._genre_names()
+
+    def get_genre_items(self) -> list[dict[str, str]]:
+        return [{"name": e["name"], "color": e["color"]} for e in self.genre_catalog]
+
+    def get_genre_colors(self) -> dict[str, str]:
+        return color_map(self.genre_catalog)
+
+    def get_genre_color(self, name: str) -> str:
+        e = self._find_genre_entry(name)
+        if e:
+            return e["color"]
+        g = apply_genre_alias(name)
+        if not g:
+            return UNCATEGORIZED_COLOR
+        return DEFAULT_GENRE_COLORS.get(g, default_color_for(g))
+
+    def genres_api_payload(self) -> dict[str, Any]:
+        items = self.get_genre_items()
+        return {
+            "genres": [e["name"] for e in items],
+            "colors": {e["name"]: e["color"] for e in items},
+            "items": items,
+            "uncategorized_color": UNCATEGORIZED_COLOR,
+            "defaults": list(DEFAULT_GENRE_CATALOG),
+            "default_colors": dict(DEFAULT_GENRE_COLORS),
+        }
+
+    def add_genre(self, name: str, color: str | None = None) -> str:
+        """Append a genre to the catalog. Returns canonical name."""
+        g = validate_new_genre_name(name, self.genre_catalog)
+        c = normalize_color(color, fallback=default_color_for(g, len(self.genre_catalog)))
+        self.genre_catalog.append({"name": g, "color": c})
+        self.save()
+        return g
+
+    def rename_genre(
+        self,
+        old_name: str,
+        new_name: str,
+        color: str | None = None,
+    ) -> tuple[str, int]:
+        """Rename catalog entry and rewrite session assignments. Returns (new_name, n_sessions)."""
+        entry = self._find_genre_entry(old_name)
+        if not entry:
+            raise ValueError(f"genre not found: {old_name}")
+        old = entry["name"]
+
+        new = clean_genre_name(new_name)
+        if not new:
+            raise ValueError("new genre name is required")
+        others = [e["name"] for e in self.genre_catalog if e["name"] != old]
+        if any(c.lower() == new.lower() for c in others):
+            raise ValueError(f"genre already exists: {new}")
+        if new in RESERVED_GENRE_NAMES or new.lower() in {
+            r.lower() for r in RESERVED_GENRE_NAMES if r
+        }:
+            raise ValueError(f"reserved name: {new}")
+
+        entry["name"] = new
+        if color is not None and str(color).strip():
+            entry["color"] = normalize_color(color, fallback=entry.get("color") or "#888894")
+        updated = 0
+        for sid, g in list(self.genres.items()):
+            if g == old:
+                self.genres[sid] = new
+                updated += 1
+        self.save()
+        return new, updated
+
+    def set_genre_color(self, name: str, color: str) -> str:
+        """Update only the color of a catalog entry. Returns name."""
+        entry = self._find_genre_entry(name)
+        if not entry:
+            raise ValueError(f"genre not found: {name}")
+        entry["color"] = normalize_color(color, fallback=entry.get("color") or "#888894")
+        self.save()
+        return entry["name"]
+
+    def delete_genre(self, name: str) -> tuple[str, int]:
+        """Remove catalog entry; clear matching session genres → Unset. Returns (removed, n_cleared)."""
+        entry = self._find_genre_entry(name)
+        if not entry:
+            raise ValueError(f"genre not found: {name}")
+        target = entry["name"]
+
+        self.genre_catalog = [e for e in self.genre_catalog if e["name"] != target]
+        cleared = 0
+        for sid, g in list(self.genres.items()):
+            if g == target:
+                del self.genres[sid]
+                cleared += 1
+        self.save()
+        return target, cleared
 
     def reload_settings(self) -> None:
         """Reload settings from disk without full store rebuild."""
@@ -403,6 +636,14 @@ class HubStore:
         raw = data.get("settings") or {}
         self.settings["port"] = int(raw.get("port", self.settings.get("port", 7420)))
         self.settings["hide_empty"] = bool(raw.get("hide_empty", self.settings.get("hide_empty", True)))
+
+    def reload_logical_sessions(self) -> None:
+        """Reload logical sessions from disk (other writers / external edits)."""
+        if not HUB_META_PATH.exists():
+            self.logical_sessions = []
+            return
+        data = json.loads(HUB_META_PATH.read_text(encoding="utf-8"))
+        self.logical_sessions = load_logical_sessions(data.get("logical_sessions"))
 
     @classmethod
     def migrate_legacy_aliases(cls) -> None:
@@ -419,6 +660,56 @@ class HubStore:
         elif session_id in self.aliases:
             del self.aliases[session_id]
         self.save()
+
+    def set_genre(self, session_id: str, genre: str | None) -> str:
+        """Set direct session genre. Empty clears. Returns normalized value stored (or "")."""
+        ng = normalize_session_genre(genre, self._genre_names())
+        if ng:
+            self.genres[session_id] = ng
+        elif session_id in self.genres:
+            del self.genres[session_id]
+        self.save()
+        return ng
+
+    def get_genre(self, session_id: str) -> str:
+        return normalize_session_genre(self.genres.get(session_id, ""), self._genre_names())
+
+    def get_related_lilith(self, session_id: str) -> list[LinkedRef]:
+        return list(self.related_lilith.get(session_id) or [])
+
+    def link_related_lilith(self, session_id: str, ref_id: str, title: str = "") -> LinkedRef:
+        """Add or update a related Lilith ref on a Vesper session. Returns the ref."""
+        ref = LinkedRef.from_dict({"id": ref_id, "title": title})
+        if not ref:
+            raise ValueError("id is required")
+        rows = list(self.related_lilith.get(session_id) or [])
+        for existing in rows:
+            if existing.id == ref.id:
+                if title.strip():
+                    existing.title = ref.title
+                    self.related_lilith[session_id] = rows
+                    self.save()
+                return existing
+        rows.append(ref)
+        self.related_lilith[session_id] = rows
+        self.save()
+        return ref
+
+    def unlink_related_lilith(self, session_id: str, ref_id: str) -> bool:
+        rid = (ref_id or "").strip()
+        if not rid:
+            return False
+        rows = list(self.related_lilith.get(session_id) or [])
+        before = len(rows)
+        rows = [r for r in rows if r.id != rid]
+        if len(rows) == before:
+            return False
+        if rows:
+            self.related_lilith[session_id] = rows
+        elif session_id in self.related_lilith:
+            del self.related_lilith[session_id]
+        self.save()
+        return True
 
     def set_project_alias(self, cwd: str, name: str) -> None:
         cwd = cwd.strip()
@@ -485,6 +776,8 @@ def discover_sessions(store: HubStore | None = None) -> list[SessionRecord]:
                 is_empty=empty,
                 summary=summary,
                 summary_source=summary_source,
+                genre=store.get_genre(sid),
+                related_lilith=store.get_related_lilith(sid),
             )
         )
 
@@ -535,6 +828,8 @@ def _session_from_summary(summary_path: Path, data: dict, store: HubStore) -> Se
         is_empty=is_empty_session(summary_path, data),
         summary=summary,
         summary_source=summary_source,
+        genre=store.get_genre(sid),
+        related_lilith=store.get_related_lilith(sid),
     )
 
 
@@ -603,33 +898,123 @@ class DeleteSessionResult:
 def _cleanup_session_meta(store: HubStore, session_id: str) -> None:
     if session_id in store.aliases:
         del store.aliases[session_id]
+    if session_id in store.genres:
+        del store.genres[session_id]
+    if session_id in store.related_lilith:
+        del store.related_lilith[session_id]
     if session_id in store.pinned:
         store.pinned = [p for p in store.pinned if p != session_id]
+    # Drop manual logical-session links so dangling refs do not accumulate.
+    unlink_vesper_everywhere(store.logical_sessions, session_id)
 
 
-def delete_session(session_id: str, store: HubStore | None = None) -> DeleteSessionResult:
-    store = store or HubStore.load()
-    row = get_session(session_id, store)
-    if not row:
-        return DeleteSessionResult(ok=False, message="session not found", id=session_id)
+def _is_remote_or_network_delete_error(err: str) -> bool:
+    """True when grok failed on remote/network and local data may still exist."""
+    e = (err or "").casefold()
+    needles = (
+        "failed to delete remote",
+        "remote session",
+        "network error",
+        "connection refused",
+        "connect error",
+        "tcp connect",
+        "timed out",
+        "timeout",
+        "code.grok.com",
+        "error sending request",
+        "client error (connect)",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "could not connect",
+        "unreachable",
+    )
+    return any(n in e for n in needles)
 
+
+def _safe_session_dir(path: str | Path) -> Path | None:
+    """Return session dir only if it lives under ~/.grok/sessions/."""
+    try:
+        sessions_root = (GROK_HOME / "sessions").resolve()
+        candidate = Path(path).expanduser().resolve()
+    except OSError:
+        return None
+    if not candidate.is_dir():
+        return None
+    try:
+        candidate.relative_to(sessions_root)
+    except ValueError:
+        return None
+    # Must be a session leaf (…/sessions/<project>/<id>), not sessions root or project root alone.
+    if candidate == sessions_root:
+        return None
+    if candidate.parent == sessions_root:
+        # project bucket dir — refuse
+        return None
+    return candidate
+
+
+def _delete_local_session_dir(session_path: str | Path) -> tuple[bool, str]:
+    """Best-effort local rmtree. Returns (ok, message)."""
+    safe = _safe_session_dir(session_path)
+    if not safe:
+        return False, f"refusing local delete outside ~/.grok/sessions: {session_path}"
+    try:
+        shutil.rmtree(safe)
+    except OSError as exc:
+        return False, f"local delete failed: {exc}"
+    return True, f"removed {safe}"
+
+
+def _run_grok_session_delete(session_id: str) -> tuple[int | None, str]:
+    """Run `grok sessions delete`. Returns (returncode or None on spawn error, err/out text)."""
     try:
         proc = subprocess.run(
-            ["grok", "sessions", "delete", row.id],
+            ["grok", "sessions", "delete", session_id],
             capture_output=True,
             text=True,
             timeout=30,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return DeleteSessionResult(ok=False, message=str(exc), id=row.id)
+        return None, str(exc)
+    text = (proc.stderr or proc.stdout or "").strip()
+    return proc.returncode, text
 
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "delete failed").strip()
-        return DeleteSessionResult(ok=False, message=err, id=row.id)
 
-    _cleanup_session_meta(store, row.id)
-    store.save()
-    return DeleteSessionResult(ok=True, message=f"Deleted session {short_id(row.id)}", id=row.id)
+def delete_session(session_id: str, store: HubStore | None = None) -> DeleteSessionResult:
+    """Delete a session. Prefer `grok sessions delete`; on remote/network failure, delete local dir."""
+    store = store or HubStore.load()
+    row = get_session(session_id, store)
+    if not row:
+        return DeleteSessionResult(ok=False, message="session not found", id=session_id)
+
+    rc, text = _run_grok_session_delete(row.id)
+    if rc == 0:
+        _cleanup_session_meta(store, row.id)
+        store.save()
+        return DeleteSessionResult(ok=True, message=f"Deleted session {short_id(row.id)}", id=row.id)
+
+    err = text or "delete failed"
+    # Remote unreachable / grok unavailable: still remove local session data.
+    if rc is None or _is_remote_or_network_delete_error(err):
+        ok_local, local_msg = _delete_local_session_dir(row.path)
+        if ok_local:
+            _cleanup_session_meta(store, row.id)
+            store.save()
+            return DeleteSessionResult(
+                ok=True,
+                message=(
+                    f"Deleted session {short_id(row.id)} (local only; "
+                    f"remote skipped: {err.splitlines()[0][:160]})"
+                ),
+                id=row.id,
+            )
+        return DeleteSessionResult(
+            ok=False,
+            message=f"{err}; local fallback also failed: {local_msg}",
+            id=row.id,
+        )
+
+    return DeleteSessionResult(ok=False, message=err, id=row.id)
 
 
 def purge_empty_sessions(store: HubStore | None = None) -> PurgeEmptyResult:
@@ -640,25 +1025,31 @@ def purge_empty_sessions(store: HubStore | None = None) -> PurgeEmptyResult:
 
     deleted_ids: list[str] = []
     errors: list[dict[str, str]] = []
+    local_only = 0
 
     for sid in targets:
-        try:
-            proc = subprocess.run(
-                ["grok", "sessions", "delete", sid],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            errors.append({"id": sid, "error": str(exc)})
+        row = get_session(sid, store)
+        if not row:
+            errors.append({"id": sid, "error": "session not found during purge"})
             continue
 
-        if proc.returncode == 0:
+        rc, text = _run_grok_session_delete(row.id)
+        if rc == 0:
             deleted_ids.append(sid)
             _cleanup_session_meta(store, sid)
             continue
 
-        err = (proc.stderr or proc.stdout or "delete failed").strip()
+        err = text or "delete failed"
+        if rc is None or _is_remote_or_network_delete_error(err):
+            ok_local, local_msg = _delete_local_session_dir(row.path)
+            if ok_local:
+                deleted_ids.append(sid)
+                local_only += 1
+                _cleanup_session_meta(store, sid)
+                continue
+            errors.append({"id": sid, "error": f"{err}; local fallback also failed: {local_msg}"})
+            continue
+
         errors.append({"id": sid, "error": err})
 
     if deleted_ids:
@@ -673,6 +1064,8 @@ def purge_empty_sessions(store: HubStore | None = None) -> PurgeEmptyResult:
         message = f"Deleted {deleted} empty session(s)"
     else:
         message = f"Failed to delete {failed} empty session(s)"
+    if local_only and deleted:
+        message += f" ({local_only} local-only; remote skipped)"
 
     return PurgeEmptyResult(
         ok=ok,

@@ -23,6 +23,8 @@
         <button id="btn-refresh" class="btn btn-secondary" title="Import remote sessions and reload list">Refresh</button>
         <button id="btn-new" class="btn btn-primary" title="New session in tmux">New</button>
         <button id="btn-sync" class="btn btn-secondary" title="Run: grok-export-to-obsidian --all --import-remote --force → Second-Brain/Sessions/Vesper/">Sync to Obsidian</button>
+        <button id="btn-all-vesper-canvas" class="btn btn-secondary" title="Export all Vesper sessions as one Obsidian Canvas (simple overview)">All Vesper Canvas</button>
+        <button id="btn-all-lilith-canvas" class="btn btn-secondary" title="Export Chat_History/Projects as one Obsidian Canvas (folder groups)">All Lilith Canvas</button>
       </div>
     </header>
 
@@ -31,9 +33,21 @@
         <aside class="sidebar">
           <div class="search-wrap">
             <input id="search" type="search" placeholder="Search sessions..." autocomplete="off" spellcheck="false">
+            <div class="genre-filter-wrap" id="genre-filter-wrap">
+              <label class="genre-filter-label" for="genre-filter">Genre</label>
+              <select id="genre-filter" title="Filter by direct session genre">
+                <option value="">All genres</option>
+              </select>
+              <button
+                id="btn-manage-genres"
+                class="btn-manage-genres"
+                type="button"
+                title="Add, rename, or delete genres"
+              >Manage</button>
+            </div>
           </div>
           <div id="session-list" class="session-list"></div>
-          <div class="sidebar-footer">
+          <div class="sidebar-footer" id="sidebar-footer-sessions">
             <div class="sidebar-footer-row">
               <label class="hide-empty-toggle" title="Hide sessions with no conversation">
                 <input type="checkbox" id="hide-empty">
@@ -61,6 +75,25 @@
     </div>
 
     <div id="toast" class="toast hidden"></div>
+
+    <div id="genre-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="genre-modal-title">
+      <div class="modal-panel genre-modal-panel">
+        <div class="modal-header">
+          <h2 id="genre-modal-title">Manage Genres</h2>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-genre-modal-close" title="Close">Close</button>
+        </div>
+        <p class="modal-hint">
+          Genres are saved in hub metadata. Deleting a genre clears it on sessions (→ Uncategorized).
+          Renaming updates all sessions that use it. Pick a color for each genre.
+        </p>
+        <div class="genre-add-row">
+          <input id="genre-new-color" type="color" value="#7c6cf0" title="Color for new genre" aria-label="Color for new genre">
+          <input id="genre-new-name" type="text" placeholder="New genre name" maxlength="64" autocomplete="off">
+          <button type="button" class="btn btn-primary btn-sm" id="btn-genre-add">Add</button>
+        </div>
+        <div id="genre-manage-list" class="genre-manage-list"></div>
+      </div>
+    </div>
   </div>
   <script src="/static/app.js"></script>
 </body>

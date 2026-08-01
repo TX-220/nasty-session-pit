@@ -7,9 +7,60 @@ const state = {
   emptyCount: 0,
   hideEmpty: false,
   collapsedProjects: loadCollapsedProjects(),
+  genres: [],
+  genreColors: {},
+  uncategorizedColor: "#6b6b78",
+  // Direct session genre filter only
+  genreFilter: loadGenreFilter(), // "" = all, genre label, or "Uncategorized"
 };
 
 const COLLAPSED_KEY = "vesper-hub-collapsed-projects";
+const GENRE_FILTER_KEY = "vesper-hub-genre-filter";
+const UNCATEGORIZED = "Uncategorized";
+const DEFAULT_GENRES = [
+  "Information Dominance",
+  "Trade Bot",
+  "Game Dev",
+  "Security",
+  "Infra & Environment",
+  "Other",
+];
+const DEFAULT_GENRE_COLORS = {
+  "Information Dominance": "#7c6cf0",
+  "Trade Bot": "#4ade80",
+  "Game Dev": "#f0c040",
+  Security: "#f87171",
+  "Infra & Environment": "#38bdf8",
+  Other: "#888894",
+};
+
+const LEGACY_GENRE_FILTER = {
+  未分類: "Uncategorized",
+  情報制圧: "Information Dominance",
+  トレードBOT: "Trade Bot",
+  ゲーム開発: "Game Dev",
+  セキュリティ: "Security",
+  インフラ・環境: "Infra & Environment",
+  その他: "Other",
+};
+
+function loadGenreFilter() {
+  try {
+    const v = localStorage.getItem(GENRE_FILTER_KEY);
+    if (v === null) return "";
+    return LEGACY_GENRE_FILTER[v] || v;
+  } catch {
+    return "";
+  }
+}
+
+function saveGenreFilter() {
+  try {
+    localStorage.setItem(GENRE_FILTER_KEY, state.genreFilter || "");
+  } catch {
+    /* ignore */
+  }
+}
 
 const $ = (sel) => document.querySelector(sel);
 const listEl = $("#session-list");
@@ -60,7 +111,7 @@ async function api(path, opts = {}) {
   } catch (e) {
     setServerOnline(false);
     throw new Error(
-      "Forge server offline — PC再起動後は vesper-forge を実行するか autostart を待つ"
+      "Forge server offline — run vesper-forge after reboot, or wait for autostart"
     );
   }
   setServerOnline(true);
@@ -71,10 +122,90 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+/**
+ * Effective genre for filter/display: direct session.genre only, else Uncategorized.
+ */
+function sessionGenres(session) {
+  if (!session) return [UNCATEGORIZED];
+  const direct = (session.genre || "").trim();
+  return direct ? [direct] : [UNCATEGORIZED];
+}
+
+function genreColor(name) {
+  const g = (name || "").trim();
+  if (!g) return state.uncategorizedColor || "#6b6b78";
+  if (g === UNCATEGORIZED) return state.uncategorizedColor || "#6b6b78";
+  return (
+    state.genreColors[g] ||
+    DEFAULT_GENRE_COLORS[g] ||
+    state.uncategorizedColor ||
+    "#888894"
+  );
+}
+
+/** Soft tint styles for badges/selects from a hex color. */
+function genreStyle(hex) {
+  const c = hex || "#888894";
+  return `color:${c};border-color:${c}66;background:${c}22`;
+}
+
+function genreOptionsHtml(selected, { includeUnset } = { includeUnset: true }) {
+  const genres = state.genres.length ? state.genres : DEFAULT_GENRES;
+  const sel = (selected || "").trim();
+  const parts = [];
+  if (includeUnset) {
+    parts.push(
+      `<option value=""${!sel ? " selected" : ""}>Unset</option>`
+    );
+  }
+  for (const g of genres) {
+    parts.push(
+      `<option value="${escAttr(g)}"${g === sel ? " selected" : ""}>${esc(g)}</option>`
+    );
+  }
+  return parts.join("");
+}
+
+function paintGenreSelect(sel, genreValue) {
+  if (!sel) return;
+  const g = (genreValue != null ? genreValue : sel.value || "").trim();
+  sel.style.cssText = genreStyle(g ? genreColor(g) : state.uncategorizedColor);
+}
+
+function paintAllGenreSelects(root) {
+  const scope = root || document;
+  scope.querySelectorAll(".session-genre-select").forEach((sel) => {
+    paintGenreSelect(sel, sel.value);
+  });
+  const detail = scope.querySelector ? scope.querySelector("#detail-genre") : null;
+  if (detail) paintGenreSelect(detail, detail.value);
+  paintGenreFilterSelect();
+}
+
+function paintGenreFilterSelect() {
+  const sel = $("#genre-filter");
+  if (!sel) return;
+  const v = sel.value || "";
+  if (!v) {
+    sel.style.cssText = "";
+    return;
+  }
+  if (v === UNCATEGORIZED) {
+    sel.style.cssText = genreStyle(state.uncategorizedColor);
+    return;
+  }
+  sel.style.cssText = genreStyle(genreColor(v));
+}
+
 function filterSessions(sessions, query) {
-  if (!query.trim()) return sessions;
+  let rows = sessions;
+  if (state.genreFilter) {
+    const g = state.genreFilter;
+    rows = rows.filter((s) => sessionGenres(s).includes(g));
+  }
+  if (!query.trim()) return rows;
   const q = query.trim().toLowerCase();
-  return sessions.filter((s) => {
+  return rows.filter((s) => {
     const hay = [
       s.display_name,
       s.title,
@@ -84,11 +215,45 @@ function filterSessions(sessions, query) {
       s.project,
       s.project_display,
       s.cwd,
+      ...sessionGenres(s),
     ]
       .join(" ")
       .toLowerCase();
     return hay.includes(q);
   });
+}
+
+function populateGenreFilterSelect() {
+  const sel = $("#genre-filter");
+  if (!sel) return;
+  const genres = state.genres.length ? state.genres : DEFAULT_GENRES;
+  const current = state.genreFilter;
+  const opts = [
+    `<option value="">All genres</option>`,
+    ...genres.map(
+      (g) =>
+        `<option value="${escAttr(g)}"${g === current ? " selected" : ""}>● ${esc(g)}</option>`
+    ),
+    `<option value="${escAttr(UNCATEGORIZED)}"${current === UNCATEGORIZED ? " selected" : ""}>● ${esc(UNCATEGORIZED)}</option>`,
+  ];
+  sel.innerHTML = opts.join("");
+  // Keep invalid saved filter from showing empty selection
+  if (current && ![...genres, UNCATEGORIZED].includes(current)) {
+    state.genreFilter = "";
+    saveGenreFilter();
+    sel.value = "";
+  } else {
+    sel.value = current || "";
+  }
+  paintGenreFilterSelect();
+}
+
+function onGenreFilterChange(value) {
+  state.genreFilter = value || "";
+  saveGenreFilter();
+  paintGenreFilterSelect();
+  renderList();
+  updateSessionCount();
 }
 
 function buildProjectGroups(sessions) {
@@ -193,7 +358,20 @@ function bindListEvents() {
   listEl.querySelectorAll(".session-item").forEach((el) => {
     el.addEventListener("click", (e) => {
       if (e.target.closest(".pin-btn")) return;
+      if (e.target.closest(".session-genre-select")) return;
       selectSession(el.dataset.id);
+    });
+  });
+
+  listEl.querySelectorAll(".session-genre-select").forEach((sel) => {
+    paintGenreSelect(sel, sel.value);
+    sel.addEventListener("click", (e) => e.stopPropagation());
+    sel.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      const id = sel.dataset.genreId;
+      if (!id) return;
+      paintGenreSelect(sel, sel.value);
+      await saveSessionGenre(id, sel.value || "");
     });
   });
 
@@ -229,12 +407,29 @@ function sessionItemHtml(s, nested) {
   const pinClass = s.pinned ? " pinned" : "";
   const emptyClass = s.is_empty ? " empty" : "";
   const nestedClass = nested ? " nested" : "";
+  const direct = (s.genre || "").trim();
+  const gColor = genreColor(direct || UNCATEGORIZED);
+  const lilithN = s.related_lilith_count ?? (s.related_lilith || []).length;
+  const lilithHint =
+    lilithN > 0
+      ? `<span class="session-lilith-count" title="Related Lilith sessions: ${lilithN}">L${lilithN}</span>`
+      : "";
+  const genreBadge = direct
+    ? `<span class="session-genre-badge" style="${genreStyle(gColor)}" title="Genre: ${escAttr(direct)}">${esc(direct)}</span>`
+    : `<span class="session-genre-badge unset" style="${genreStyle(state.uncategorizedColor)}" title="Unset">Unset</span>`;
   return `
     <div class="session-item${active}${emptyClass}${nestedClass}" data-id="${s.id}">
       <button class="btn-icon pin-btn${pinClass}" data-id="${s.id}" title="Pin/unpin">★</button>
       <div class="session-item-body">
         <div class="session-item-name">${esc(s.display_name)}</div>
-        <div class="session-item-meta">${esc(s.updated_display)} · ${esc(s.short_id)}</div>
+        <div class="session-item-meta">
+          ${esc(s.updated_display)} · ${esc(s.short_id)}
+          ${lilithHint}
+          ${genreBadge}
+          <select class="session-genre-select" data-genre-id="${escAttr(s.id)}" title="Direct genre" onclick="event.stopPropagation()" style="${genreStyle(gColor)}">
+            ${genreOptionsHtml(direct, { includeUnset: true })}
+          </select>
+        </div>
       </div>
     </div>`;
 }
@@ -249,6 +444,27 @@ function renderDetail(session) {
     ? `<button class="btn btn-ghost" id="btn-obsidian" title="Open synced markdown note in Obsidian">Open note</button>`
     : `<span class="detail-hint">No Obsidian note — use Sync above</span>`;
 
+  const lilithRefs = session.related_lilith || [];
+  const lilithRows = lilithRefs.length
+    ? lilithRefs
+        .map((ref) => {
+          const title = ref.title || ref.id;
+          return `
+      <div class="link-row">
+        <div class="link-row-body">
+          <div class="link-row-title">${esc(title)}</div>
+          <div class="link-row-meta mono">${esc(ref.id)}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" type="button" data-unlink-lilith="${escAttr(ref.id)}" title="Unlink">Unlink</button>
+      </div>`;
+        })
+        .join("")
+    : `<div class="link-empty">None yet — add a session ID or URL and optional display name</div>`;
+
+  const genreNote = (session.genre || "").trim()
+    ? "Set directly"
+    : "Unset (shows as Uncategorized in filters)";
+
   detailEl.innerHTML = `
     <div class="detail-content">
       <div class="detail-header">
@@ -262,10 +478,30 @@ function renderDetail(session) {
           <span>Sandbox: ${esc(session.sandbox_profile || "off")}</span>
           <span class="mono">ID: ${esc(session.short_id)}…</span>
         </div>
+        <div class="detail-genre-row">
+          <label for="detail-genre">Genre</label>
+          <select id="detail-genre" title="Direct genre for this Vesper session (manual)">
+            ${genreOptionsHtml(session.genre || "", { includeUnset: true })}
+          </select>
+          <span class="detail-hint detail-genre-hint">${esc(genreNote)}</span>
+        </div>
       </div>
       <div class="detail-summary-block">
-        <div class="detail-summary-label">要約</div>
+        <div class="detail-summary-label">Summary</div>
         <div class="detail-summary">${esc(session.summary || session.preview || "")}</div>
+      </div>
+      <div class="link-section related-lilith-block">
+        <div class="link-section-header">
+          <h3>Related Lilith Sessions (${lilithRefs.length})</h3>
+        </div>
+        <div class="link-list">
+          ${lilithRows}
+        </div>
+        <div class="link-add">
+          <input id="related-lilith-id" type="text" placeholder="Lilith Session ID / URL" autocomplete="off">
+          <input id="related-lilith-title" type="text" placeholder="Display Name (optional)" autocomplete="off">
+          <button class="btn btn-secondary btn-sm" type="button" id="btn-link-lilith">Add</button>
+        </div>
       </div>
       <div class="detail-actions">
         <button class="btn btn-primary" id="btn-open">Open in tmux</button>
@@ -284,6 +520,15 @@ function renderDetail(session) {
     }
   });
 
+  const detailGenre = $("#detail-genre");
+  if (detailGenre) {
+    paintGenreSelect(detailGenre, session.genre || "");
+    detailGenre.addEventListener("change", (e) => {
+      paintGenreSelect(detailGenre, e.target.value || "");
+      saveSessionGenre(session.id, e.target.value || "");
+    });
+  }
+
   $("#btn-open").addEventListener("click", () => openSession(session.id));
   $("#btn-copy").addEventListener("click", () => copyCommand(session.command));
 
@@ -293,14 +538,113 @@ function renderDetail(session) {
   }
 
   $("#btn-delete")?.addEventListener("click", () => deleteSession(session));
+
+  $("#btn-link-lilith")?.addEventListener("click", () => linkRelatedLilith(session.id));
+  $("#related-lilith-id")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") linkRelatedLilith(session.id);
+  });
+  $("#related-lilith-title")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") linkRelatedLilith(session.id);
+  });
+
+  detailEl.querySelectorAll("[data-unlink-lilith]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        const updated = await api(
+          `/api/sessions/${session.id}/lilith/${encodeURIComponent(btn.dataset.unlinkLilith)}`,
+          { method: "DELETE" }
+        );
+        applySessionUpdate(updated);
+        showToast("Lilith link removed", "success");
+      } catch (e) {
+        showToast(`Unlink failed: ${e.message}`, "error");
+      }
+    });
+  });
 }
 
-function selectSession(id) {
+function applySessionUpdate(updated) {
+  if (!updated || !updated.id) return;
+  const idx = state.sessions.findIndex((s) => s.id === updated.id);
+  if (idx >= 0) state.sessions[idx] = updated;
+  renderList();
+  if (state.selectedId === updated.id) {
+    renderDetail(updated);
+  }
+}
+
+async function linkRelatedLilith(sessionId) {
+  const id = $("#related-lilith-id")?.value?.trim() || "";
+  const title = $("#related-lilith-title")?.value?.trim() || "";
+  if (!id) {
+    showToast("Enter a Lilith ID / URL", "error");
+    return;
+  }
+  try {
+    const updated = await api(`/api/sessions/${sessionId}/lilith`, {
+      method: "POST",
+      body: JSON.stringify({ id, title }),
+    });
+    applySessionUpdate(updated);
+    showToast("Lilith session linked", "success");
+  } catch (e) {
+    showToast(`Link failed: ${e.message}`, "error");
+  }
+}
+
+function downloadCanvasFile(filename, canvas) {
+  const text = JSON.stringify(canvas, null, 2) + "\n";
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "overview.canvas";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+
+async function exportAllOverviewCanvas(kind) {
+  // kind: "vesper" | "lilith" — independent of logical-session linking
+  const isVesper = kind === "vesper";
+  const btn = $(isVesper ? "#btn-all-vesper-canvas" : "#btn-all-lilith-canvas");
+  const endpoint = isVesper ? "/api/canvas/all-vesper" : "/api/canvas/all-lilith";
+  const idleLabel = isVesper ? "All Vesper Canvas" : "All Lilith Canvas";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Exporting…";
+  }
+  try {
+    const result = await api(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ save: true }),
+    });
+    if (result.canvas && result.filename) {
+      downloadCanvasFile(result.filename, result.canvas);
+    }
+    const n = result.session_count != null ? ` (${result.session_count} sessions)` : "";
+    showToast(
+      (result.message || "Canvas exported") + n,
+      result.ok === false ? "error" : "success"
+    );
+  } catch (e) {
+    showToast(`Canvas export failed: ${e.message}`, "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = idleLabel;
+    }
+  }
+}
+
+async function selectSession(id) {
   const session = state.sessions.find((s) => s.id === id);
   if (session) ensureProjectExpanded(session.cwd);
   state.selectedId = id;
   renderList();
-  renderDetail(session);
+  renderDetail(session || null);
 }
 
 function updateSessionCount() {
@@ -308,8 +652,12 @@ function updateSessionCount() {
   const hideEl = $("#hide-empty");
   const purgeBtn = $("#btn-purge-empty");
   if (!el) return;
-  const projectCount = buildProjectGroups(state.sessions.filter((s) => !s.pinned)).length;
-  if (state.shown === state.total) {
+  const filtered = filterSessions(state.sessions, state.query);
+  const projectCount = buildProjectGroups(filtered.filter((s) => !s.pinned)).length;
+  const filterNote = state.genreFilter ? ` · ${state.genreFilter}` : "";
+  if (state.genreFilter || state.query.trim()) {
+    el.textContent = `${filtered.length} shown · ${state.shown}/${state.total}${filterNote}`;
+  } else if (state.shown === state.total) {
     el.textContent = `${state.total} sessions · ${projectCount} projects`;
   } else {
     el.textContent = `${state.shown}/${state.total} · ${projectCount} projects`;
@@ -329,6 +677,7 @@ async function loadSessions() {
   state.shown = data.shown;
   state.emptyCount = data.empty_count ?? 0;
   state.hideEmpty = data.hide_empty;
+  populateGenreFilterSelect();
   renderList();
   updateSessionCount();
   if (state.selectedId) {
@@ -339,6 +688,206 @@ async function loadSessions() {
       state.selectedId = null;
       renderDetail(null);
     }
+  }
+}
+
+function ingestGenrePayload(data) {
+  if (!data) return;
+  if (Array.isArray(data.genres)) state.genres = data.genres;
+  if (data.colors && typeof data.colors === "object") {
+    state.genreColors = { ...data.colors };
+  } else if (Array.isArray(data.items)) {
+    const map = {};
+    for (const it of data.items) {
+      if (it && it.name) map[it.name] = it.color || DEFAULT_GENRE_COLORS[it.name] || "#888894";
+    }
+    state.genreColors = map;
+  }
+  if (data.uncategorized_color) {
+    state.uncategorizedColor = data.uncategorized_color;
+  }
+}
+
+async function loadGenres() {
+  try {
+    const data = await api("/api/genres");
+    ingestGenrePayload(data);
+    populateGenreFilterSelect();
+    if (!$("#genre-modal")?.classList.contains("hidden")) {
+      renderGenreManageList();
+    }
+  } catch {
+    /* keep defaults */
+  }
+}
+
+function applyGenreCatalog(dataOrNames) {
+  if (Array.isArray(dataOrNames)) {
+    state.genres = dataOrNames;
+  } else if (dataOrNames && typeof dataOrNames === "object") {
+    ingestGenrePayload(dataOrNames);
+  }
+  if (state.genreFilter && state.genreFilter !== UNCATEGORIZED) {
+    if (!state.genres.includes(state.genreFilter)) {
+      state.genreFilter = "";
+      saveGenreFilter();
+    }
+  }
+  populateGenreFilterSelect();
+  renderList();
+  updateSessionCount();
+  if (state.selectedId) {
+    const s = state.sessions.find((x) => x.id === state.selectedId);
+    if (s) renderDetail(s);
+  }
+  renderGenreManageList();
+}
+
+function openGenreModal() {
+  const modal = $("#genre-modal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  renderGenreManageList();
+  const input = $("#genre-new-name");
+  const color = $("#genre-new-color");
+  if (color && !color.value) color.value = "#7c6cf0";
+  if (input) {
+    input.value = "";
+    input.focus();
+  }
+}
+
+function closeGenreModal() {
+  $("#genre-modal")?.classList.add("hidden");
+}
+
+function renderGenreManageList() {
+  const list = $("#genre-manage-list");
+  if (!list) return;
+  const genres = state.genres.length ? state.genres : DEFAULT_GENRES;
+  if (!genres.length) {
+    list.innerHTML = `<div class="genre-manage-empty">No genres yet — add one above.</div>`;
+    return;
+  }
+  list.innerHTML = genres
+    .map((g) => {
+      const c = genreColor(g);
+      return `
+    <div class="genre-manage-row" data-genre="${escAttr(g)}">
+      <input type="color" class="genre-color-input" value="${escAttr(c)}" data-genre-color="${escAttr(g)}" title="Color for ${escAttr(g)}" aria-label="Color for ${escAttr(g)}">
+      <span class="genre-manage-swatch" style="background:${escAttr(c)}"></span>
+      <span class="genre-manage-name" title="${escAttr(g)}">${esc(g)}</span>
+      <div class="genre-manage-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-genre-rename="${escAttr(g)}">Rename</button>
+        <button type="button" class="btn btn-danger btn-sm" data-genre-delete="${escAttr(g)}">Delete</button>
+      </div>
+    </div>`;
+    })
+    .join("");
+
+  list.querySelectorAll("[data-genre-rename]").forEach((btn) => {
+    btn.addEventListener("click", () => renameGenre(btn.dataset.genreRename));
+  });
+  list.querySelectorAll("[data-genre-delete]").forEach((btn) => {
+    btn.addEventListener("click", () => deleteGenre(btn.dataset.genreDelete));
+  });
+  list.querySelectorAll("[data-genre-color]").forEach((input) => {
+    input.addEventListener("change", () =>
+      setGenreColor(input.dataset.genreColor, input.value)
+    );
+  });
+}
+
+async function addGenre() {
+  const input = $("#genre-new-name");
+  const colorEl = $("#genre-new-color");
+  const name = (input?.value || "").trim();
+  const color = colorEl?.value || "";
+  if (!name) {
+    showToast("Enter a genre name", "error");
+    return;
+  }
+  try {
+    const result = await api("/api/genres", {
+      method: "POST",
+      body: JSON.stringify({ name, color: color || null }),
+    });
+    applyGenreCatalog(result);
+    if (input) input.value = "";
+    showToast(`Genre added: ${result.name}`, "success");
+  } catch (e) {
+    showToast(`Add genre failed: ${e.message}`, "error");
+  }
+}
+
+async function setGenreColor(name, color) {
+  if (!name || !color) return;
+  try {
+    const result = await api("/api/genres/color", {
+      method: "PUT",
+      body: JSON.stringify({ name, color }),
+    });
+    applyGenreCatalog(result);
+    showToast(`Color updated: ${result.name}`, "success");
+  } catch (e) {
+    showToast(`Color update failed: ${e.message}`, "error");
+    renderGenreManageList();
+  }
+}
+
+async function renameGenre(oldName) {
+  if (!oldName) return;
+  const next = prompt("Rename genre:", oldName);
+  if (next === null) return;
+  const newName = next.trim();
+  if (!newName || newName === oldName) return;
+  try {
+    const result = await api("/api/genres", {
+      method: "PATCH",
+      body: JSON.stringify({ old_name: oldName, new_name: newName }),
+    });
+    if (state.genreFilter === oldName) {
+      state.genreFilter = result.name || newName;
+      saveGenreFilter();
+    }
+    applyGenreCatalog(result);
+    await loadSessions();
+    const n = result.updated_sessions ?? 0;
+    showToast(
+      n ? `Renamed to ${result.name} (${n} session${n === 1 ? "" : "s"})` : `Renamed to ${result.name}`,
+      "success"
+    );
+  } catch (e) {
+    showToast(`Rename failed: ${e.message}`, "error");
+  }
+}
+
+async function deleteGenre(name) {
+  if (!name) return;
+  const ok = confirm(
+    `Delete genre "${name}"?\n\nSessions using it will become Unset (Uncategorized in filters).`
+  );
+  if (!ok) return;
+  try {
+    const result = await api("/api/genres", {
+      method: "DELETE",
+      body: JSON.stringify({ name }),
+    });
+    if (state.genreFilter === name) {
+      state.genreFilter = "";
+      saveGenreFilter();
+    }
+    applyGenreCatalog(result);
+    await loadSessions();
+    const n = result.cleared_sessions ?? 0;
+    showToast(
+      n
+        ? `Deleted "${result.name}" · cleared ${n} session${n === 1 ? "" : "s"}`
+        : `Deleted "${result.name}"`,
+      "success"
+    );
+  } catch (e) {
+    showToast(`Delete genre failed: ${e.message}`, "error");
   }
 }
 
@@ -448,6 +997,26 @@ async function saveAlias(id) {
   }
 }
 
+async function saveSessionGenre(id, genre) {
+  try {
+    const updated = await api(`/api/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ genre: genre || "" }),
+    });
+    applySessionUpdate(updated);
+    const label = (updated.genre || "").trim() || "Unset";
+    showToast(`Genre → ${label}`, "success");
+  } catch (e) {
+    showToast(`Genre save failed: ${e.message}`, "error");
+    // Revert selects by re-render
+    renderList();
+    if (state.selectedId === id) {
+      const s = state.sessions.find((x) => x.id === id);
+      if (s) renderDetail(s);
+    }
+  }
+}
+
 async function togglePin(id) {
   try {
     const updated = await api(`/api/sessions/${id}/pin`, { method: "POST" });
@@ -540,10 +1109,32 @@ function escAttr(str) {
 searchEl.addEventListener("input", () => {
   state.query = searchEl.value;
   renderList();
+  updateSessionCount();
+});
+
+$("#genre-filter")?.addEventListener("change", (e) => {
+  onGenreFilterChange(e.target.value);
+});
+
+$("#btn-manage-genres")?.addEventListener("click", openGenreModal);
+$("#btn-genre-modal-close")?.addEventListener("click", closeGenreModal);
+$("#btn-genre-add")?.addEventListener("click", addGenre);
+$("#genre-new-name")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addGenre();
+});
+$("#genre-modal")?.addEventListener("click", (e) => {
+  if (e.target === $("#genre-modal")) closeGenreModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#genre-modal")?.classList.contains("hidden")) {
+    closeGenreModal();
+  }
 });
 
 $("#btn-new").addEventListener("click", newSession);
 $("#btn-sync").addEventListener("click", syncObsidian);
+$("#btn-all-vesper-canvas")?.addEventListener("click", () => exportAllOverviewCanvas("vesper"));
+$("#btn-all-lilith-canvas")?.addEventListener("click", () => exportAllOverviewCanvas("lilith"));
 $("#btn-refresh").addEventListener("click", refreshSessions);
 $("#hide-empty")?.addEventListener("change", (e) => toggleHideEmpty(e.target.checked));
 $("#btn-purge-empty")?.addEventListener("click", purgeEmptySessions);
@@ -628,7 +1219,9 @@ async function checkServerHealth() {
 }
 
 initSidebarResize();
-loadSessions().catch((e) => showToast(`Load failed: ${e.message}`, "error"));
+Promise.all([loadGenres(), loadSessions()]).catch((e) =>
+  showToast(`Load failed: ${e.message}`, "error")
+);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") checkServerHealth();
 });
