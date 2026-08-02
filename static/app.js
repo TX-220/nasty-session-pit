@@ -6,16 +6,13 @@ const state = {
   shown: 0,
   emptyCount: 0,
   hideEmpty: false,
-  collapsedProjects: loadCollapsedProjects(),
+  collapsedGenres: loadCollapsedGenres(),
   genres: [],
   genreColors: {},
   uncategorizedColor: "#6b6b78",
-  // Direct session genre filter only
-  genreFilter: loadGenreFilter(), // "" = all, genre label, or "Uncategorized"
 };
 
-const COLLAPSED_KEY = "vesper-hub-collapsed-projects";
-const GENRE_FILTER_KEY = "vesper-hub-genre-filter";
+const COLLAPSED_GENRES_KEY = "vesper-hub-collapsed-genres";
 const UNCATEGORIZED = "Uncategorized";
 const DEFAULT_GENRES = [
   "Information Dominance",
@@ -34,34 +31,6 @@ const DEFAULT_GENRE_COLORS = {
   Other: "#888894",
 };
 
-const LEGACY_GENRE_FILTER = {
-  未分類: "Uncategorized",
-  情報制圧: "Information Dominance",
-  トレードBOT: "Trade Bot",
-  ゲーム開発: "Game Dev",
-  セキュリティ: "Security",
-  インフラ・環境: "Infra & Environment",
-  その他: "Other",
-};
-
-function loadGenreFilter() {
-  try {
-    const v = localStorage.getItem(GENRE_FILTER_KEY);
-    if (v === null) return "";
-    return LEGACY_GENRE_FILTER[v] || v;
-  } catch {
-    return "";
-  }
-}
-
-function saveGenreFilter() {
-  try {
-    localStorage.setItem(GENRE_FILTER_KEY, state.genreFilter || "");
-  } catch {
-    /* ignore */
-  }
-}
-
 const $ = (sel) => document.querySelector(sel);
 const listEl = $("#session-list");
 const detailEl = $("#detail");
@@ -72,20 +41,22 @@ const offlineBanner = $("#offline-banner");
 let toastTimer = null;
 let serverOnline = true;
 
-function loadCollapsedProjects() {
+function loadCollapsedGenres() {
   try {
-    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]"));
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_GENRES_KEY) || "[]"));
   } catch {
     return new Set();
   }
 }
 
-function saveCollapsedProjects() {
-  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...state.collapsedProjects]));
+function saveCollapsedGenres() {
+  localStorage.setItem(COLLAPSED_GENRES_KEY, JSON.stringify([...state.collapsedGenres]));
 }
 
-function projectKey(cwd) {
-  return cwd || "(unknown)";
+/** Direct session genre label, or Uncategorized when unset. */
+function sessionGenreKey(session) {
+  const direct = (session?.genre || "").trim();
+  return direct || UNCATEGORIZED;
 }
 
 function setServerOnline(online) {
@@ -179,33 +150,12 @@ function paintAllGenreSelects(root) {
   });
   const detail = scope.querySelector ? scope.querySelector("#detail-genre") : null;
   if (detail) paintGenreSelect(detail, detail.value);
-  paintGenreFilterSelect();
-}
-
-function paintGenreFilterSelect() {
-  const sel = $("#genre-filter");
-  if (!sel) return;
-  const v = sel.value || "";
-  if (!v) {
-    sel.style.cssText = "";
-    return;
-  }
-  if (v === UNCATEGORIZED) {
-    sel.style.cssText = genreStyle(state.uncategorizedColor);
-    return;
-  }
-  sel.style.cssText = genreStyle(genreColor(v));
 }
 
 function filterSessions(sessions, query) {
-  let rows = sessions;
-  if (state.genreFilter) {
-    const g = state.genreFilter;
-    rows = rows.filter((s) => sessionGenres(s).includes(g));
-  }
-  if (!query.trim()) return rows;
+  if (!query.trim()) return sessions;
   const q = query.trim().toLowerCase();
-  return rows.filter((s) => {
+  return sessions.filter((s) => {
     const hay = [
       s.display_name,
       s.title,
@@ -223,105 +173,76 @@ function filterSessions(sessions, query) {
   });
 }
 
-function populateGenreFilterSelect() {
-  const sel = $("#genre-filter");
-  if (!sel) return;
-  const genres = state.genres.length ? state.genres : DEFAULT_GENRES;
-  const current = state.genreFilter;
-  const opts = [
-    `<option value="">All genres</option>`,
-    ...genres.map(
-      (g) =>
-        `<option value="${escAttr(g)}"${g === current ? " selected" : ""}>● ${esc(g)}</option>`
-    ),
-    `<option value="${escAttr(UNCATEGORIZED)}"${current === UNCATEGORIZED ? " selected" : ""}>● ${esc(UNCATEGORIZED)}</option>`,
-  ];
-  sel.innerHTML = opts.join("");
-  // Keep invalid saved filter from showing empty selection
-  if (current && ![...genres, UNCATEGORIZED].includes(current)) {
-    state.genreFilter = "";
-    saveGenreFilter();
-    sel.value = "";
-  } else {
-    sel.value = current || "";
-  }
-  paintGenreFilterSelect();
-}
-
-function onGenreFilterChange(value) {
-  state.genreFilter = value || "";
-  saveGenreFilter();
-  paintGenreFilterSelect();
-  renderList();
-  updateSessionCount();
-}
-
-function buildProjectGroups(sessions) {
+/**
+ * Group sessions by direct genre. Order: catalog → extra used genres → Uncategorized.
+ * Empty genres (0 sessions) are omitted.
+ */
+function buildGenreGroups(sessions) {
   const groups = new Map();
   for (const s of sessions) {
-    const key = projectKey(s.cwd);
+    const key = sessionGenreKey(s);
     if (!groups.has(key)) {
-      groups.set(key, {
-        cwd: s.cwd || "",
-        key,
-        label: s.project_display || s.project || key,
-        path: s.project || key,
-        sessions: [],
-        latest: s.updated,
-      });
+      groups.set(key, { key, label: key, sessions: [] });
     }
-    const group = groups.get(key);
-    group.sessions.push(s);
-    if (s.updated > group.latest) group.latest = s.updated;
+    groups.get(key).sessions.push(s);
   }
 
   for (const group of groups.values()) {
     group.sessions.sort((a, b) => b.updated.localeCompare(a.updated));
   }
 
-  return [...groups.values()].sort((a, b) => b.latest.localeCompare(a.latest));
+  const catalog = state.genres.length ? state.genres : DEFAULT_GENRES;
+  const catalogSet = new Set(catalog);
+  const ordered = [];
+
+  for (const g of catalog) {
+    if (groups.has(g)) ordered.push(groups.get(g));
+  }
+
+  const extras = [...groups.keys()]
+    .filter((k) => k !== UNCATEGORIZED && !catalogSet.has(k))
+    .sort((a, b) => a.localeCompare(b));
+  for (const k of extras) ordered.push(groups.get(k));
+
+  if (groups.has(UNCATEGORIZED)) ordered.push(groups.get(UNCATEGORIZED));
+
+  return ordered;
 }
 
-function isProjectCollapsed(key, searching) {
+function isGenreCollapsed(key, searching) {
   if (searching) return false;
-  return state.collapsedProjects.has(key);
+  return state.collapsedGenres.has(key);
 }
 
-function ensureProjectExpanded(cwd) {
-  const key = projectKey(cwd);
-  if (state.collapsedProjects.delete(key)) {
-    saveCollapsedProjects();
+function ensureGenreExpanded(genreKey) {
+  const key = genreKey || UNCATEGORIZED;
+  if (state.collapsedGenres.delete(key)) {
+    saveCollapsedGenres();
   }
 }
 
-function toggleProject(key) {
-  if (state.collapsedProjects.has(key)) {
-    state.collapsedProjects.delete(key);
+function toggleGenre(key) {
+  if (state.collapsedGenres.has(key)) {
+    state.collapsedGenres.delete(key);
   } else {
-    state.collapsedProjects.add(key);
+    state.collapsedGenres.add(key);
   }
-  saveCollapsedProjects();
+  saveCollapsedGenres();
   renderList();
 }
 
-function projectGroupHtml(group, searching) {
-  const collapsed = isProjectCollapsed(group.key, searching);
-  const title = group.cwd ? `${group.label} — ${group.cwd}` : group.label;
-  const pathHtml =
-    group.label !== group.path
-      ? `<span class="project-path">${esc(group.path)}</span>`
-      : "";
-
+function genreGroupHtml(group, searching) {
+  const collapsed = isGenreCollapsed(group.key, searching);
+  const color = genreColor(group.key);
   return `
-    <div class="project-group${collapsed ? " collapsed" : ""}" data-project="${escAttr(group.key)}">
-      <button class="project-header" type="button" title="${escAttr(title)} — double-click to rename">
-        <span class="project-chevron" aria-hidden="true">▼</span>
-        <span class="project-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.17a1.5 1.5 0 0 1 1.06.44L8.5 4H13a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-9z"/></svg></span>
-        <span class="project-label">${esc(group.label)}</span>
-        ${pathHtml}
-        <span class="project-count">${group.sessions.length}</span>
+    <div class="genre-group${collapsed ? " collapsed" : ""}" data-genre="${escAttr(group.key)}">
+      <button class="genre-header" type="button" title="${escAttr(group.label)}">
+        <span class="genre-chevron" aria-hidden="true">▼</span>
+        <span class="genre-dot" style="background:${escAttr(color)}" aria-hidden="true"></span>
+        <span class="genre-label">${esc(group.label)}</span>
+        <span class="genre-count">${group.sessions.length}</span>
       </button>
-      <div class="project-sessions">
+      <div class="genre-sessions">
         ${group.sessions.map((s) => sessionItemHtml(s, true)).join("")}
       </div>
     </div>`;
@@ -330,23 +251,13 @@ function projectGroupHtml(group, searching) {
 function renderList() {
   const searching = Boolean(state.query.trim());
   const filtered = filterSessions(state.sessions, state.query);
-  const pinned = filtered.filter((s) => s.pinned);
-  const unpinned = filtered.filter((s) => !s.pinned);
-  const groups = buildProjectGroups(unpinned);
+  const groups = buildGenreGroups(filtered);
 
   let html = "";
 
-  if (pinned.length) {
-    html += `<div class="section-label">★ Pinned</div>`;
-    html += pinned.map((s) => sessionItemHtml(s, false)).join("");
-  }
-
   if (groups.length) {
-    html += `<div class="section-label">Projects</div>`;
-    html += groups.map((g) => projectGroupHtml(g, searching)).join("");
-  }
-
-  if (!filtered.length) {
+    html = groups.map((g) => genreGroupHtml(g, searching)).join("");
+  } else {
     html = `<div class="section-label empty-list">No sessions found</div>`;
   }
 
@@ -382,22 +293,11 @@ function bindListEvents() {
     });
   });
 
-  listEl.querySelectorAll(".project-header").forEach((btn) => {
+  listEl.querySelectorAll(".genre-header").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const group = btn.closest(".project-group");
+      const group = btn.closest(".genre-group");
       if (!group) return;
-      toggleProject(group.dataset.project);
-    });
-
-    btn.addEventListener("dblclick", async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const group = btn.closest(".project-group");
-      if (!group) return;
-      const key = group.dataset.project;
-      const session = state.sessions.find((s) => projectKey(s.cwd) === key);
-      if (!session) return;
-      await renameProject(session.cwd, session.project_display || session.project);
+      toggleGenre(group.dataset.genre);
     });
   });
 }
@@ -641,7 +541,7 @@ async function exportAllOverviewCanvas(kind) {
 
 async function selectSession(id) {
   const session = state.sessions.find((s) => s.id === id);
-  if (session) ensureProjectExpanded(session.cwd);
+  if (session) ensureGenreExpanded(sessionGenreKey(session));
   state.selectedId = id;
   renderList();
   renderDetail(session || null);
@@ -653,14 +553,13 @@ function updateSessionCount() {
   const purgeBtn = $("#btn-purge-empty");
   if (!el) return;
   const filtered = filterSessions(state.sessions, state.query);
-  const projectCount = buildProjectGroups(filtered.filter((s) => !s.pinned)).length;
-  const filterNote = state.genreFilter ? ` · ${state.genreFilter}` : "";
-  if (state.genreFilter || state.query.trim()) {
-    el.textContent = `${filtered.length} shown · ${state.shown}/${state.total}${filterNote}`;
+  const genreCount = buildGenreGroups(filtered).length;
+  if (state.query.trim()) {
+    el.textContent = `${filtered.length} shown · ${state.shown}/${state.total}`;
   } else if (state.shown === state.total) {
-    el.textContent = `${state.total} sessions · ${projectCount} projects`;
+    el.textContent = `${state.total} sessions · ${genreCount} genres`;
   } else {
-    el.textContent = `${state.shown}/${state.total} · ${projectCount} projects`;
+    el.textContent = `${state.shown}/${state.total} · ${genreCount} genres`;
   }
   if (hideEl) hideEl.checked = state.hideEmpty;
   if (purgeBtn) {
@@ -677,7 +576,6 @@ async function loadSessions() {
   state.shown = data.shown;
   state.emptyCount = data.empty_count ?? 0;
   state.hideEmpty = data.hide_empty;
-  populateGenreFilterSelect();
   renderList();
   updateSessionCount();
   if (state.selectedId) {
@@ -712,7 +610,6 @@ async function loadGenres() {
   try {
     const data = await api("/api/genres");
     ingestGenrePayload(data);
-    populateGenreFilterSelect();
     if (!$("#genre-modal")?.classList.contains("hidden")) {
       renderGenreManageList();
     }
@@ -727,13 +624,6 @@ function applyGenreCatalog(dataOrNames) {
   } else if (dataOrNames && typeof dataOrNames === "object") {
     ingestGenrePayload(dataOrNames);
   }
-  if (state.genreFilter && state.genreFilter !== UNCATEGORIZED) {
-    if (!state.genres.includes(state.genreFilter)) {
-      state.genreFilter = "";
-      saveGenreFilter();
-    }
-  }
-  populateGenreFilterSelect();
   renderList();
   updateSessionCount();
   if (state.selectedId) {
@@ -846,9 +736,10 @@ async function renameGenre(oldName) {
       method: "PATCH",
       body: JSON.stringify({ old_name: oldName, new_name: newName }),
     });
-    if (state.genreFilter === oldName) {
-      state.genreFilter = result.name || newName;
-      saveGenreFilter();
+    if (state.collapsedGenres.has(oldName)) {
+      state.collapsedGenres.delete(oldName);
+      state.collapsedGenres.add(result.name || newName);
+      saveCollapsedGenres();
     }
     applyGenreCatalog(result);
     await loadSessions();
@@ -873,9 +764,8 @@ async function deleteGenre(name) {
       method: "DELETE",
       body: JSON.stringify({ name }),
     });
-    if (state.genreFilter === name) {
-      state.genreFilter = "";
-      saveGenreFilter();
+    if (state.collapsedGenres.delete(name)) {
+      saveCollapsedGenres();
     }
     applyGenreCatalog(result);
     await loadSessions();
@@ -888,27 +778,6 @@ async function deleteGenre(name) {
     );
   } catch (e) {
     showToast(`Delete genre failed: ${e.message}`, "error");
-  }
-}
-
-async function renameProject(cwd, currentLabel) {
-  const alias = prompt("Project display name:", currentLabel || "");
-  if (alias === null) return;
-  try {
-    const result = await api("/api/projects/alias", {
-      method: "PATCH",
-      body: JSON.stringify({ cwd, alias: alias.trim() }),
-    });
-    state.sessions = result.sessions || state.sessions;
-    renderList();
-    updateSessionCount();
-    if (state.selectedId) {
-      const session = state.sessions.find((s) => s.id === state.selectedId);
-      if (session) renderDetail(session);
-    }
-    showToast("Project name saved", "success");
-  } catch (e) {
-    showToast(`Project rename failed: ${e.message}`, "error");
   }
 }
 
@@ -1110,10 +979,6 @@ searchEl.addEventListener("input", () => {
   state.query = searchEl.value;
   renderList();
   updateSessionCount();
-});
-
-$("#genre-filter")?.addEventListener("change", (e) => {
-  onGenreFilterChange(e.target.value);
 });
 
 $("#btn-manage-genres")?.addEventListener("click", openGenreModal);

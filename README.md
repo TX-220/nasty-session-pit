@@ -123,7 +123,7 @@ Top bar **All Vesper Canvas** / **All Lilith Canvas** — independent of related
 | Button | Source | Output |
 |--------|--------|--------|
 | All Vesper Canvas | `~/.grok/sessions` (Forge list), light genre groups | `Second-Brain/Sessions/Vesper/All-Vesper-Sessions.canvas` |
-| All Lilith Canvas | `Chat_History/Projects/*` folder map | `Second-Brain/Sessions/Lilith/All-Lilith-Sessions.canvas` |
+| All Lilith Canvas | `Second-Brain/Lilith/Projects/*` folder map | `Second-Brain/Lilith/All-Lilith-Sessions.canvas` |
 
 Lilith overview is also available from **Viora Vault Hub** → *Canvas: All Lilith Sessions Overview* (`Scripts/export_all_sessions_canvas.py --lilith`).
 
@@ -193,5 +193,7 @@ Copyright (c) 2026 TX-220 with assistance from [Grok (xAI)](./https://x.ai).
 ---
 
 ## Version
+
+`1.7.0` — Sidebar genre directory tree (collapsible folders); pin as star only; project/cwd grouping and genre filter select removed
 
 `1.6.0` — Related Lilith; user-managed genres + colors; Obsidian sync into genre folders; Logical sessions retired; All Canvas; delete local fallback; English UI

@@ -85,7 +85,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="VesperForge",
-    version="1.6.0",
+    version="1.7.0",
     lifespan=lifespan,
     description="Local Grok Build session browser with Obsidian sync, related Lilith links, and Canvas export",
 )

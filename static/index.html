@@ -24,7 +24,7 @@
         <button id="btn-new" class="btn btn-primary" title="New session in tmux">New</button>
         <button id="btn-sync" class="btn btn-secondary" title="Run: grok-export-to-obsidian --all --import-remote --force → Second-Brain/Sessions/Vesper/">Sync to Obsidian</button>
         <button id="btn-all-vesper-canvas" class="btn btn-secondary" title="Export all Vesper sessions as one Obsidian Canvas (simple overview)">All Vesper Canvas</button>
-        <button id="btn-all-lilith-canvas" class="btn btn-secondary" title="Export Chat_History/Projects as one Obsidian Canvas (folder groups)">All Lilith Canvas</button>
+        <button id="btn-all-lilith-canvas" class="btn btn-secondary" title="Export Second-Brain/Lilith/Projects → Second-Brain/Lilith/All-Lilith-Sessions.canvas">All Lilith Canvas</button>
       </div>
     </header>
 
@@ -33,17 +33,13 @@
         <aside class="sidebar">
           <div class="search-wrap">
             <input id="search" type="search" placeholder="Search sessions..." autocomplete="off" spellcheck="false">
-            <div class="genre-filter-wrap" id="genre-filter-wrap">
-              <label class="genre-filter-label" for="genre-filter">Genre</label>
-              <select id="genre-filter" title="Filter by direct session genre">
-                <option value="">All genres</option>
-              </select>
+            <div class="genre-toolbar" id="genre-toolbar">
               <button
                 id="btn-manage-genres"
                 class="btn-manage-genres"
                 type="button"
                 title="Add, rename, or delete genres"
-              >Manage</button>
+              >Manage Genres</button>
             </div>
           </div>
           <div id="session-list" class="session-list"></div>
