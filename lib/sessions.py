@@ -28,6 +28,7 @@ from lib.genres import (
     parse_genre_catalog,
     validate_new_genre_name,
 )
+from lib.sandbox_config import effective_profile, normalize_profile
 from lib.logical_sessions import (
     GENRES,
     LinkedRef,
@@ -176,7 +177,16 @@ def project_display_name(cwd: str, store: HubStore) -> str:
 
 def build_resume_command(session_id: str, sandbox_profile: str = "off") -> str:
     profile = (sandbox_profile or "off").strip() or "off"
-    return f"grok -r {session_id} --sandbox {profile}"
+    return f"GROK_SANDBOX={profile} grok -r {session_id} --sandbox {profile}"
+
+
+def session_sandbox_profile(data: dict) -> str:
+    """Sandbox fixed at session launch (summary.json). Not the global Pit default."""
+    raw = data.get("sandbox_profile")
+    if raw is not None and str(raw).strip():
+        return normalize_profile(str(raw))
+    # Older summaries without the field — fall back to current global default
+    return effective_profile()
 
 
 def extract_message_text(content: Any) -> str:
@@ -747,7 +757,8 @@ def discover_sessions(store: HubStore | None = None) -> list[SessionRecord]:
         title = (data.get("generated_title") or data.get("session_summary") or "(no title)").strip()
         alias = store.aliases.get(sid, "")
         display = alias or title
-        sandbox = (data.get("sandbox_profile") or "off").strip() or "off"
+        # Fixed at launch — from summary.json, not the global Pit toolbar default.
+        sandbox = session_sandbox_profile(data)
         cwd = session_cwd(summary_path, data)
         empty = is_empty_session(summary_path, data)
         proj = project_label(cwd)
@@ -802,7 +813,7 @@ def _session_from_summary(summary_path: Path, data: dict, store: HubStore) -> Se
     sid = data.get("info", {}).get("id") or summary_path.parent.name
     title = (data.get("generated_title") or data.get("session_summary") or "(no title)").strip()
     alias = store.aliases.get(sid, "")
-    sandbox = (data.get("sandbox_profile") or "off").strip() or "off"
+    sandbox = session_sandbox_profile(data)
     cwd = session_cwd(summary_path, data)
     proj = project_label(cwd)
     summary, summary_source = extract_session_summary(summary_path, data)

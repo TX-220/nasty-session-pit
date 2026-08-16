@@ -1,6 +1,8 @@
-# VesperForge
+# Nasty Session Pit
 
-Local web UI for browsing, launching, and syncing **Grok Build** sessions to **Obsidian**.
+Formerly **VesperForge**. Same local power — **cosmic purple / hot magenta** night-ops skin.
+
+Local web UI for browsing, resuming, and syncing **Grok Build** sessions to **Obsidian**.
 
 **Audience:** People who run [Grok Build](https://x.ai) (CLI/TUI) on Linux and keep notes in Obsidian.
 
@@ -12,15 +14,16 @@ Local web UI for browsing, launching, and syncing **Grok Build** sessions to **O
 
 - List local Grok sessions (`~/.grok/sessions/`)
 - Search, pin, rename (display aliases stored locally)
-- **Direct genre** on each Vesper session + filter
-- **Related Lilith sessions** — manual id/url + optional title on each Vesper session
-- Open sessions in **tmux**
+- **Direct genre** on each session + collapsible genre tree
+- **Related Lilith sessions** — manual id/url + optional title
+- **New default** sandbox control (maxsec / coding / off) for plain `grok`
+- **Copy new** / **Copy resume** CLI snippets (terminal-first)
+- Per-session **launch sandbox** badge (read-only from `summary.json`)
 - **Sync to Obsidian** — one click (or CLI) export of session notes + transcripts
-- Project grouping by session working directory (cwd)
 - Optional empty-session purge
 - **All Vesper / All Lilith Canvas** overview export
 
-UI stays minimal: **Refresh · New · Sync to Obsidian · All Canvas**.
+UI toolbar: **New default · Copy new · Refresh · Sync to Obsidian · All Canvas**.
 
 ---
 
@@ -39,8 +42,8 @@ UI stays minimal: **Refresh · New · Sync to Obsidian · All Canvas**.
 
 ```bash
 # 1. Clone
-git clone https://github.com/TX-220/vesper-forge.git
-cd vesper-forge
+git clone https://github.com/TX-220/nasty-session-pit.git
+cd nasty-session-pit
 
 # 2. Dependencies
 python3 -m pip install -r requirements.txt --user
@@ -54,12 +57,14 @@ python3 server.py
 # open http://127.0.0.1:7420/
 ```
 
+> **Rename note:** GitHub redirects `TX-220/vesper-forge` → `TX-220/nasty-session-pit`.
+
 ### Optional launcher (this machine)
 
-If installed as `~/bin/vesper-forge`:
+If installed as `~/bin/vesper-forge` / hub unit:
 
 ```bash
-vesper-forge              # start + open browser
+vesper-forge              # start + open browser (legacy name still fine)
 vesper-forge --no-open    # server only
 vesper-forge --stop       # stop
 ```
@@ -78,6 +83,41 @@ systemd user unit (optional): point `WorkingDirectory` / `ExecStart` at this rep
 | Obsidian export dir | `~/obsidian-vault/Second-Brain/Sessions/Vesper/` |
 
 Display names are **aliases** in Hub metadata; they do not rewrite Grok’s `summary.json`.
+
+### Sandbox modes (toolbar)
+
+Top bar segmented control — one click, no CLI memorization:
+
+| Mode | Profile | Meaning |
+|------|---------|---------|
+| **OFF** | `off` | Full host access — fastest parallel / GPU / net |
+| **coding** | `coding` | Everyday isolation — secrets denied, network OK |
+| **maxsec** | `maxsec` | Fortress — secrets denied, child network blocked |
+
+**Header “New default”** sets the sandbox for **new** plain `grok` launches (does **not** change existing sessions).
+
+| Layer | Role |
+|-------|------|
+| `~/.grok/config.toml` `[sandbox] profile=` | Source of truth (persists across reboot) |
+| `~/bin/grok` wrapper (+ `~/.local/bin/grok` → wrapper) | Injects that profile when you omit `--sandbox` (beats stale `GROK_SANDBOX` in old shells) |
+| bashrc | **Unsets** `GROK_SANDBOX` (no frozen export) |
+
+Each session’s **launch sandbox** is read from `summary.json` → `sandbox_profile` and shown as a **read-only** badge.
+
+- API: `GET /api/sandbox`, `PATCH /api/sandbox` `{ "profile": "maxsec" }`, `POST /api/sandbox/toggle`
+- One-shot override: `grok --sandbox off` / `coding` / `maxsec`
+- Shell aliases `grok-trade` / `grok-secure` still force maxsec
+
+### Copy commands (terminal-first)
+
+If you do **not** use Open in tmux / New:
+
+| Where | Control | Copies |
+|-------|---------|--------|
+| Top bar | **Copy new** · maxsec / coding / off | `GROK_SANDBOX=… grok --sandbox …` |
+| Session detail | **Copy resume** · maxsec / coding / off | `GROK_SANDBOX=… grok -r <id> --sandbox …` |
+
+Paste into any terminal. **Copy resume** buttons choose sandbox for the *new process* only (★ marks the session’s original launch sandbox). The recorded session sandbox is never rewritten from the UI.
 
 ### Related Lilith sessions
 
@@ -133,7 +173,7 @@ Lilith overview is also available from **Viora Vault Hub** → *Canvas: All Lili
 
 | Action | How |
 |--------|-----|
-| Open UI | `python3 server.py` or `vesper-forge` |
+| Open UI | `python3 server.py` (or local `vesper-forge` launcher) |
 | Sync all sessions → Obsidian | UI **Sync to Obsidian**, or: |
 | | `grok-export-to-obsidian --all --import-remote --force` |
 | Resume session (CLI) | `grok -r <SESSION_ID> --sandbox off` |
@@ -188,11 +228,13 @@ Sessions/Vesper/
 
 MIT — see [LICENSE](./LICENSE).
 
-Copyright (c) 2026 TX-220 with assistance from [Grok (xAI)](./https://x.ai).
+Copyright (c) 2026 TX-220 with assistance from [Grok (xAI)](https://x.ai).
 
 ---
 
 ## Version
+
+`1.13` — Public rebrand **Nasty Session Pit**; sandbox NEW DEFAULT wiring + UI clarity (session launch badge, Copy new/resume)
 
 `1.7.0` — Sidebar genre directory tree (collapsible folders); pin as star only; project/cwd grouping and genre filter select removed
 

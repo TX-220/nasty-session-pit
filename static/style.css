@@ -1,22 +1,28 @@
 :root {
-  --bg: #0d0d0f;
-  --bg-sidebar: #141418;
-  --bg-hover: #1e1e24;
-  --bg-active: #252530;
-  --border: #2a2a32;
-  --text: #e8e8ec;
-  --text-muted: #888894;
-  --accent: #7c6cf0;
-  --accent-hover: #9588f5;
-  --pin: #f0c040;
-  --success: #4ade80;
-  --error: #f87171;
+  /* Nasty Session Pit — cosmic / lewd night ops */
+  --bg: #0d0514;
+  --bg-deep: #08030e;
+  --bg-sidebar: #12081c;
+  --bg-hover: #1f0f2e;
+  --bg-active: #2a143c;
+  --border: #3a1848;
+  --border-soft: #2a1038;
+  --text: #f5e8f2;
+  --text-muted: #a88aaa;
+  --accent: #ff2d95;
+  --accent-hover: #ff5aad;
+  --accent-dim: rgba(255, 45, 149, 0.18);
+  --sub: #c4a0ff;
+  --pin: #ff2d95;
+  --success: #5dffb0;
+  --error: #ff6b9d;
   --radius: 8px;
   --sidebar-w: 300px;
   --sidebar-min: 180px;
   --detail-min: 120px;
   --font: "Inter", system-ui, -apple-system, sans-serif;
   --mono: "JetBrains Mono", "Fira Code", monospace;
+  --glow-pink: 0 0 18px rgba(255, 45, 149, 0.25);
 }
 
 * {
@@ -38,12 +44,17 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  background:
+    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(233, 30, 140, 0.12), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 95% 0%, rgba(123, 77, 255, 0.1), transparent 50%),
+    radial-gradient(ellipse 50% 60% at 50% 110%, rgba(255, 45, 149, 0.06), transparent 55%),
+    var(--bg-deep);
 }
 
 .offline-banner {
-  background: #3a2020;
+  background: #2a0a18;
   border-bottom: 1px solid var(--error);
-  color: #fca5a5;
+  color: #ffb3c9;
   padding: 8px 16px;
   font-size: 13px;
   text-align: center;
@@ -67,25 +78,86 @@ html, body {
   justify-content: space-between;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-sidebar);
+  background:
+    linear-gradient(180deg, rgba(255, 45, 149, 0.06), transparent 70%),
+    var(--bg-sidebar);
   flex-shrink: 0;
+  box-shadow: 0 1px 0 rgba(255, 45, 149, 0.08);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+}
+
+/* Soft pink aura bloom around brand icon */
+.brand-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.brand-icon-wrap::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 120, 190, 0.55) 0%,
+    rgba(255, 45, 149, 0.32) 32%,
+    rgba(196, 160, 255, 0.14) 52%,
+    transparent 72%
+  );
+  filter: blur(4px);
+  pointer-events: none;
+  z-index: 0;
+  animation: brand-aura-breathe 3.4s ease-in-out infinite alternate;
+}
+
+@keyframes brand-aura-breathe {
+  from { opacity: 0.72; transform: scale(0.94); }
+  to { opacity: 1; transform: scale(1.08); }
 }
 
 .brand-icon {
-  color: var(--accent);
-  font-size: 18px;
+  position: relative;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  display: block;
+  flex-shrink: 0;
+  border-radius: 6px;
+  filter:
+    drop-shadow(0 0 2px rgba(255, 224, 240, 0.9))
+    drop-shadow(0 0 6px rgba(255, 45, 149, 0.9))
+    drop-shadow(0 0 14px rgba(255, 45, 149, 0.55))
+    drop-shadow(0 0 24px rgba(196, 160, 255, 0.28));
 }
 
 .brand h1 {
   font-size: 16px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
+  background: linear-gradient(105deg, #ffe0f0 0%, #ff5aad 45%, #c4a0ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.build-tag {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  opacity: 0.85;
+  user-select: none;
 }
 
 .topbar-actions {
@@ -145,12 +217,14 @@ html, body {
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: linear-gradient(135deg, #ff2d95 0%, #e91e8c 55%, #b8147a 100%);
   color: #fff;
+  box-shadow: 0 0 14px rgba(255, 45, 149, 0.35);
 }
 
 .btn-primary:hover {
-  background: var(--accent-hover);
+  background: linear-gradient(135deg, #ff5aad 0%, #ff2d95 55%, #e91e8c 100%);
+  box-shadow: 0 0 20px rgba(255, 45, 149, 0.5);
 }
 
 .btn-secondary {
@@ -161,6 +235,8 @@ html, body {
 
 .btn-secondary:hover {
   background: var(--bg-hover);
+  border-color: var(--accent);
+  color: #ffe0f0;
 }
 
 .btn-ghost {
@@ -172,6 +248,253 @@ html, body {
 .btn-ghost:hover {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+/* Sandbox mode segmented control: OFF | coding | maxsec */
+.sandbox-modes {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.sandbox-modes.is-mismatch {
+  border-style: dashed;
+  border-color: rgba(240, 192, 64, 0.65);
+}
+
+.sandbox-modes-label {
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+.btn-sandbox-mode {
+  padding: 6px 12px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.btn-sandbox-mode:first-of-type {
+  border-left: none;
+}
+
+.btn-sandbox-mode:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn-sandbox-mode:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.btn-sandbox-mode.is-active[data-sandbox="off"] {
+  background: rgba(248, 113, 113, 0.14);
+  color: #fca5a5;
+}
+
+.btn-sandbox-mode.is-active[data-sandbox="coding"] {
+  background: rgba(74, 222, 128, 0.14);
+  color: var(--success);
+}
+
+.btn-sandbox-mode.is-active[data-sandbox="maxsec"] {
+  background: rgba(255, 45, 149, 0.2);
+  color: var(--accent-hover);
+  box-shadow: inset 0 0 0 1px rgba(255, 45, 149, 0.45);
+}
+
+/* Read-only session sandbox badges (launch profile from summary.json) */
+.sandbox-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  user-select: none;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.sandbox-badge-list {
+  font-size: 9px;
+  padding: 0 6px;
+}
+
+.sandbox-badge-lg {
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.sandbox-badge.sandbox-maxsec {
+  background: rgba(255, 45, 149, 0.16);
+  border-color: rgba(255, 45, 149, 0.45);
+  color: var(--accent-hover);
+}
+
+.sandbox-badge.sandbox-coding {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: rgba(74, 222, 128, 0.4);
+  color: var(--success);
+}
+
+.sandbox-badge.sandbox-off {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fca5a5;
+}
+
+.sandbox-badge.sandbox-lilith {
+  background: rgba(167, 139, 250, 0.14);
+  border-color: rgba(167, 139, 250, 0.45);
+  color: #c4b5fd;
+}
+
+.session-sandbox-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.session-sandbox-pill-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.session-sandbox-pill-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+
+.detail-copy-session-sb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-copy-session-sb-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.detail-copy-session-sb-note {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.btn-copy-cmd.is-session-sandbox {
+  background: rgba(255, 45, 149, 0.12);
+  color: var(--accent-hover);
+  box-shadow: inset 0 0 0 1px rgba(255, 45, 149, 0.35);
+}
+
+/* Copy command groups (new / resume) — terminal-first workflow */
+.copy-cmd-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.copy-cmd-label {
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.btn-copy-cmd {
+  padding: 6px 11px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.btn-copy-cmd:first-of-type {
+  border-left: none;
+}
+
+.btn-copy-cmd:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn-copy-cmd:active {
+  background: var(--bg-active);
+  color: var(--accent-hover);
+}
+
+.detail-copy-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  width: 100%;
+}
+
+.detail-copy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+}
+
+.detail-copy-row .copy-cmd-group {
+  flex-wrap: wrap;
+}
+
+.detail-copy-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0;
 }
 
 .btn-danger {
@@ -285,6 +608,7 @@ body.sidebar-resizing * {
 
 .search-wrap input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim), var(--glow-pink);
 }
 
 .search-wrap input::placeholder {
@@ -456,8 +780,8 @@ body.sidebar-resizing * {
 
 .session-genre-select:hover,
 .session-genre-select:focus {
-  border-color: var(--accent, #7c6cf0);
-  color: var(--text, #e8e8ec);
+  border-color: var(--accent, #ff2d95);
+  color: var(--text, #f5e8f2);
   outline: none;
 }
 
@@ -759,9 +1083,9 @@ body.sidebar-resizing * {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: #b4a9ff;
-  background: rgba(124, 108, 240, 0.15);
-  border: 1px solid rgba(124, 108, 240, 0.35);
+  color: #e0c8ff;
+  background: rgba(196, 160, 255, 0.15);
+  border: 1px solid rgba(196, 160, 255, 0.4);
   vertical-align: middle;
 }
 
@@ -797,7 +1121,8 @@ body.sidebar-resizing * {
 .detail-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   margin-bottom: 8px;
 }
 
@@ -1038,5 +1363,5 @@ body.sidebar-resizing * {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3a44;
+  background: #5a2468;
 }

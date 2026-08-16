@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VesperForge</title>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <title>Nasty Session Pit</title>
+  <link rel="icon" href="/static/favicon.svg?v=nsp1" type="image/svg+xml">
   <link rel="icon" href="/static/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/style.css">
@@ -12,16 +12,41 @@
 <body>
   <div class="app">
     <div id="offline-banner" class="offline-banner hidden">
-      Forge server offline — run <code>vesper-forge</code> or wait for autostart
+      Nasty Session Pit offline — run <code>vesper-forge</code> or wait for autostart
     </div>
     <header class="topbar">
       <div class="brand">
-        <span class="brand-icon">✦</span>
-        <h1>VesperForge</h1>
+        <span class="brand-icon-wrap" aria-hidden="true">
+          <img class="brand-icon" src="/static/favicon.svg?v=nsp1" width="22" height="22" alt="">
+        </span>
+        <h1>Nasty Session Pit</h1>
       </div>
       <div class="topbar-actions">
+        <div
+          class="sandbox-modes"
+          id="sandbox-modes"
+          role="group"
+          aria-label="Sandbox default for new sessions only"
+          title="NEW sessions only: writes config.toml + bashrc. Does not change any existing session’s sandbox (fixed at launch)."
+        >
+          <span class="sandbox-modes-label">New default</span>
+          <button type="button" class="btn-sandbox-mode" data-sandbox="maxsec" title="New-session default: maxsec (fortress — secrets denied, child network blocked)">maxsec</button>
+          <button type="button" class="btn-sandbox-mode" data-sandbox="coding" title="New-session default: coding (everyday isolation — secrets denied, network OK)">coding</button>
+          <button type="button" class="btn-sandbox-mode" data-sandbox="off" title="New-session default: OFF (full host access)">OFF</button>
+        </div>
+        <div
+          class="copy-cmd-group"
+          id="copy-new-cmds"
+          role="group"
+          aria-label="Copy new session commands"
+          title="Copy a new-session CLI command with the chosen sandbox (does not use the selected existing session)"
+        >
+          <span class="copy-cmd-label">Copy new</span>
+          <button type="button" class="btn-copy-cmd" data-copy-new="maxsec" title="Copy: new session with sandbox maxsec">maxsec</button>
+          <button type="button" class="btn-copy-cmd" data-copy-new="coding" title="Copy: new session with sandbox coding">coding</button>
+          <button type="button" class="btn-copy-cmd" data-copy-new="off" title="Copy: new session with sandbox off">off</button>
+        </div>
         <button id="btn-refresh" class="btn btn-secondary" title="Import remote sessions and reload list">Refresh</button>
-        <button id="btn-new" class="btn btn-primary" title="New session in tmux">New</button>
         <button id="btn-sync" class="btn btn-secondary" title="Run: grok-export-to-obsidian --all --import-remote --force → Second-Brain/Sessions/Vesper/">Sync to Obsidian</button>
         <button id="btn-all-vesper-canvas" class="btn btn-secondary" title="Export all Vesper sessions as one Obsidian Canvas (simple overview)">All Vesper Canvas</button>
         <button id="btn-all-lilith-canvas" class="btn btn-secondary" title="Export Second-Brain/Lilith/Projects → Second-Brain/Lilith/All-Lilith-Sessions.canvas">All Lilith Canvas</button>

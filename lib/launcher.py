@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+from .sandbox_config import effective_profile
 from .sessions import OBSIDIAN_SESSIONS_DIR, build_resume_command, short_id
 
 VAULT_ROOT = Path.home() / "obsidian-vault"
@@ -202,12 +203,16 @@ def _raise_obsidian_window() -> None:
         pass
 
 
-def _build_resume_command(session_id: str, sandbox_profile: str = "off") -> str:
-    return build_resume_command(session_id, sandbox_profile)
+def _build_resume_command(session_id: str, sandbox_profile: str | None = None) -> str:
+    profile = sandbox_profile if sandbox_profile is not None else effective_profile()
+    return build_resume_command(session_id, profile)
 
 
-def _build_new_command() -> str:
-    return "grok"
+def _build_new_command(sandbox_profile: str | None = None) -> str:
+    profile = sandbox_profile if sandbox_profile is not None else effective_profile()
+    profile = (profile or "off").strip() or "off"
+    # Force CLI flag so systemd/tmux env cannot silently re-pin maxsec/off.
+    return f"GROK_SANDBOX={profile} grok --sandbox {profile}"
 
 
 def launch_in_tmux(command: str, window_name: str) -> LaunchResult:
@@ -228,13 +233,15 @@ def launch_in_tmux(command: str, window_name: str) -> LaunchResult:
     return LaunchResult(True, command, f"Opened tmux window '{safe_name}'", safe_name)
 
 
-def launch_grok_resume(session_id: str, sandbox_profile: str = "off") -> LaunchResult:
-    command = _build_resume_command(session_id, sandbox_profile)
+def launch_grok_resume(session_id: str, sandbox_profile: str | None = None) -> LaunchResult:
+    """Resume with Forge global sandbox default (toggle), not session summary alone."""
+    profile = sandbox_profile if sandbox_profile is not None else effective_profile()
+    command = _build_resume_command(session_id, profile)
     return launch_in_tmux(command, f"vesper-{short_id(session_id)}")
 
 
-def launch_grok() -> LaunchResult:
-    command = _build_new_command()
+def launch_grok(sandbox_profile: str | None = None) -> LaunchResult:
+    command = _build_new_command(sandbox_profile)
     return launch_in_tmux(command, "vesper-new")
 
 

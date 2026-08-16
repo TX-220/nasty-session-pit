@@ -1,29 +1,24 @@
 # Marketplace / listing draft (English)
 
 ## Short name
-VesperForge
+Nasty Session Pit
 
 ## One-liner
-Local session browser for Grok Build with one-click Obsidian export.
+Local Grok Build session browser with Obsidian sync — cosmic purple night-ops UI.
 
 ## Short description (≈280 chars)
-VesperForge is a localhost web UI for managing Grok Build sessions: search, pin, rename, open in tmux, and sync notes/transcripts to Obsidian. Built for solo Linux workflows—simple toolbar, no cloud multi-user hosting.
+Nasty Session Pit is a localhost web UI for managing Grok Build sessions: search, pin, rename, genres, sandbox defaults, copy-ready CLI resume commands, and sync notes/transcripts to Obsidian. Solo Linux workflows only — no cloud multi-user hosting.
 
 ## Longer description
-VesperForge helps you manage local Grok Build session history from a small browser UI on `127.0.0.1`.
+Nasty Session Pit (formerly VesperForge) helps you manage local Grok Build session history from a small browser UI on `127.0.0.1`.
 
 **What you can do**
-- Browse and search sessions stored under `~/.grok/sessions/`
+- Browse and search sessions under `~/.grok/sessions/`
 - Pin and rename sessions (local aliases)
-- Open a session in a new tmux window
+- Set **New default** sandbox (maxsec / coding / off) for plain `grok`
+- **Copy new** / **Copy resume** commands for the terminal
+- See each session’s launch sandbox (read-only)
 - Sync all sessions to an Obsidian vault folder (summary + transcript)
+- Export All Vesper / All Lilith Canvas overviews
 
-**What it is not**
-- Not a multi-user SaaS
-- Not a replacement for the Grok TUI
-- Not a generic chat export tool for other products
-
-**Requirements:** Linux, Python 3.10+, Grok Build CLI (`grok`). Optional: tmux, Obsidian.
-
-## Keywords
-grok-build, sessions, obsidian, local-first, linux, tmux
+**Repo:** https://github.com/TX-220/nasty-session-pit

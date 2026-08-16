@@ -15,16 +15,23 @@ from pathlib import Path
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.launcher import launch_grok, launch_grok_resume, open_obsidian_note
+from lib.sandbox_config import (
+    ensure_launch_wiring,
+    set_profile,
+    status as sandbox_status,
+    toggle as sandbox_toggle,
+)
 from lib.canvas_export import (
     ALL_LILITH_CANVAS_DIR,
     ALL_LILITH_FILENAME,
@@ -80,15 +87,35 @@ async def lifespan(_app: FastAPI):
     global store
     HubStore.migrate_legacy_aliases()
     store = HubStore.load()
+    # Wire NEW DEFAULT → plain `grok` (config.toml + bashrc unset + ~/bin/grok wrapper)
+    try:
+        ensure_launch_wiring()
+    except Exception as exc:  # noqa: BLE001 — never block hub on shell wiring
+        logger.warning("sandbox launch wiring failed: %s", exc)
     yield
 
 
 app = FastAPI(
-    title="VesperForge",
-    version="1.7.0",
+    title="Nasty Session Pit",
+    version="1.13.0",
     lifespan=lifespan,
-    description="Local Grok Build session browser with Obsidian sync, related Lilith links, and Canvas export",
+    description="Local Grok Build session browser with Obsidian sync, sandbox modes, and copy-ready CLI commands",
 )
+
+
+class _NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """Avoid stale app.js after Forge UI edits (browser hard-reload still keeps etag sometimes)."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
+app.add_middleware(_NoCacheStaticMiddleware)
 
 
 class SessionUpdate(BaseModel):
@@ -152,6 +179,13 @@ class SettingsUpdate(BaseModel):
     hide_empty: bool | None = None
 
 
+class SandboxUpdate(BaseModel):
+    """Set sandbox default. profile=off|coding|maxsec (preferred) or enabled=true/false."""
+
+    enabled: bool | None = None
+    profile: str | None = None
+
+
 class PurgeEmptyResponse(BaseModel):
     ok: bool
     deleted: int
@@ -207,7 +241,7 @@ def list_sessions() -> dict:
         "empty_count": count_empty_sessions(),
         "hide_empty": store.settings.get("hide_empty", True),
         "project_aliases": store.project_aliases,
-        "app_name": "VesperForge",
+        "app_name": "Nasty Session Pit",
     }
 
 
@@ -242,7 +276,7 @@ def get_settings() -> dict:
     store.reload_settings()
     return {
         **store.settings,
-        "app_name": "VesperForge",
+        "app_name": "Nasty Session Pit",
     }
 
 
@@ -252,6 +286,32 @@ def update_settings(body: SettingsUpdate) -> dict:
         store.settings["hide_empty"] = body.hide_empty
         store.save()
     return get_settings()
+
+
+@app.get("/api/sandbox")
+def get_sandbox() -> dict:
+    """Global Grok sandbox default (config.toml + ~/.bashrc GROK_SANDBOX)."""
+    return sandbox_status()
+
+
+@app.post("/api/sandbox/toggle")
+def toggle_sandbox() -> dict:
+    """Cycle default: maxsec → coding → off → maxsec."""
+    return sandbox_toggle()
+
+
+@app.patch("/api/sandbox")
+def update_sandbox(body: SandboxUpdate) -> dict:
+    try:
+        if body.profile is not None:
+            return set_profile(body.profile)
+        if body.enabled is not None:
+            from lib.sandbox_config import CODING_PROFILE, OFF_PROFILE
+
+            return set_profile(CODING_PROFILE if body.enabled else OFF_PROFILE)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    raise HTTPException(400, "provide profile (off|coding|maxsec) or enabled")
 
 
 @app.post("/api/refresh")
@@ -356,6 +416,7 @@ def open_session(session_id: str) -> LaunchResponse:
     if not row:
         raise HTTPException(404, "session not found")
     try:
+        # Resume with this session's launch sandbox (fixed at start; not global default).
         result = launch_grok_resume(row.id, row.sandbox_profile)
     except Exception as exc:
         return LaunchResponse(
@@ -422,7 +483,7 @@ def _hub_env() -> dict[str, str]:
 
 def _write_sync_log(text: str) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    body = f"=== VesperForge sync {stamp} ===\n{text.rstrip()}\n"
+    body = f"=== Nasty Session Pit sync {stamp} ===\n{text.rstrip()}\n"
     try:
         SYNC_LOG_PATH.write_text(body, encoding="utf-8")
     except OSError as exc:
@@ -846,12 +907,30 @@ def api_export_all_lilith_canvas(body: CanvasExportBody | None = None) -> dict:
 
 @app.get("/favicon.ico")
 def favicon() -> FileResponse:
-    return FileResponse(STATIC_DIR / "favicon.ico")
+    return FileResponse(
+        STATIC_DIR / "favicon.ico",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def index() -> HTMLResponse:
+    """Serve index with cache-busted static URLs (mtime query)."""
+    html_path = STATIC_DIR / "index.html"
+    html = html_path.read_text(encoding="utf-8")
+    for name in ("app.js", "style.css"):
+        p = STATIC_DIR / name
+        ver = str(int(p.stat().st_mtime)) if p.is_file() else "0"
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={ver}")
+    # Visible build marker so Viora can confirm the live UI (not a cached tab)
+    html = html.replace(
+        "<h1>Nasty Session Pit</h1>",
+        '<h1>Nasty Session Pit</h1><span class="build-tag" title="UI build id">v1.13</span>',
+    )
+    return HTMLResponse(
+        content=html,
+        headers={"Cache-Control": "no-store, max-age=0, must-revalidate"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

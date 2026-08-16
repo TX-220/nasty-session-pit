@@ -10,7 +10,38 @@ const state = {
   genres: [],
   genreColors: {},
   uncategorizedColor: "#6b6b78",
+  sandbox: null,
 };
+
+/** Forge UI sandbox modes (must match backend UI_PROFILES). Fortress-first default. */
+const SANDBOX_MODES = ["maxsec", "coding", "off"];
+const DEFAULT_SANDBOX = "maxsec";
+
+function buildNewCommand(profile) {
+  const p = (profile || DEFAULT_SANDBOX).trim() || DEFAULT_SANDBOX;
+  return `GROK_SANDBOX=${p} grok --sandbox ${p}`;
+}
+
+function buildResumeCommand(sessionId, profile) {
+  const p = (profile || DEFAULT_SANDBOX).trim() || DEFAULT_SANDBOX;
+  return `GROK_SANDBOX=${p} grok -r ${sessionId} --sandbox ${p}`;
+}
+
+/** Session launch sandbox from summary.json (read-only; fixed at launch). */
+function sessionSandbox(session) {
+  const p = (session?.sandbox_profile || DEFAULT_SANDBOX).trim() || DEFAULT_SANDBOX;
+  return p;
+}
+
+function sandboxBadgeHtml(profile, { title, extraClass } = {}) {
+  const p = (profile || DEFAULT_SANDBOX).trim() || DEFAULT_SANDBOX;
+  const label = p === "off" ? "OFF" : p;
+  const t =
+    title ||
+    `Sandbox fixed at launch: ${p} (cannot change on an existing session)`;
+  const cls = extraClass ? ` ${extraClass}` : "";
+  return `<span class="sandbox-badge sandbox-${escAttr(p)}${cls}" title="${escAttr(t)}" data-sandbox="${escAttr(p)}">${esc(label)}</span>`;
+}
 
 const COLLAPSED_GENRES_KEY = "vesper-hub-collapsed-genres";
 const UNCATEGORIZED = "Uncategorized";
@@ -82,7 +113,7 @@ async function api(path, opts = {}) {
   } catch (e) {
     setServerOnline(false);
     throw new Error(
-      "Forge server offline — run vesper-forge after reboot, or wait for autostart"
+      "Nasty Session Pit offline — run vesper-forge after reboot, or wait for autostart"
     );
   }
   setServerOnline(true);
@@ -317,6 +348,11 @@ function sessionItemHtml(s, nested) {
   const genreBadge = direct
     ? `<span class="session-genre-badge" style="${genreStyle(gColor)}" title="Genre: ${escAttr(direct)}">${esc(direct)}</span>`
     : `<span class="session-genre-badge unset" style="${genreStyle(state.uncategorizedColor)}" title="Unset">Unset</span>`;
+  const sb = sessionSandbox(s);
+  const sandboxPill = sandboxBadgeHtml(sb, {
+    title: `Launch sandbox: ${sb} (fixed — cannot change on this session)`,
+    extraClass: "sandbox-badge-list",
+  });
   return `
     <div class="session-item${active}${emptyClass}${nestedClass}" data-id="${s.id}">
       <button class="btn-icon pin-btn${pinClass}" data-id="${s.id}" title="Pin/unpin">★</button>
@@ -324,6 +360,7 @@ function sessionItemHtml(s, nested) {
         <div class="session-item-name">${esc(s.display_name)}</div>
         <div class="session-item-meta">
           ${esc(s.updated_display)} · ${esc(s.short_id)}
+          ${sandboxPill}
           ${lilithHint}
           ${genreBadge}
           <select class="session-genre-select" data-genre-id="${escAttr(s.id)}" title="Direct genre" onclick="event.stopPropagation()" style="${genreStyle(gColor)}">
@@ -365,17 +402,36 @@ function renderDetail(session) {
     ? "Set directly"
     : "Unset (shows as Uncategorized in filters)";
 
+  const sb = sessionSandbox(session);
+  const sbLabel = sb === "off" ? "OFF" : sb;
+  // Include non-UI launch profiles (e.g. lilith) so ★ can still mark the original.
+  const resumeModes = SANDBOX_MODES.includes(sb) ? SANDBOX_MODES : [sb, ...SANDBOX_MODES];
+  const resumeButtons = resumeModes.map((p) => {
+    const isOrig = p === sb;
+    const label = p === "off" ? "off" : p;
+    const mark = isOrig ? " ★" : "";
+    const cls = isOrig ? "btn-copy-cmd is-session-sandbox" : "btn-copy-cmd";
+    const tip = isOrig
+      ? `Copy resume with this session’s launch sandbox (${p}) — recommended\n${buildResumeCommand(session.id, p)}`
+      : `Copy resume using ${p} for the NEW process only (does not rewrite this session’s recorded sandbox)\n${buildResumeCommand(session.id, p)}`;
+    return `<button type="button" class="${cls}" data-copy-resume="${escAttr(p)}" title="${escAttr(tip)}">${esc(label)}${mark}</button>`;
+  }).join("");
+
   detailEl.innerHTML = `
     <div class="detail-content">
       <div class="detail-header">
         <div class="detail-title-row">
           <input class="detail-title" id="detail-title" value="${escAttr(session.display_name)}" title="Click to rename">
+          <div class="session-sandbox-pill" title="Recorded at launch from summary.json — cannot be changed on this session">
+            <span class="session-sandbox-pill-label">Session sandbox</span>
+            ${sandboxBadgeHtml(sb, { extraClass: "sandbox-badge-lg" })}
+            <span class="session-sandbox-pill-note">fixed at launch</span>
+          </div>
         </div>
         <div class="detail-meta">
           <span>Updated: ${esc(session.updated_display)}</span>
           <span>Messages: ${session.num_messages}</span>
           <span>Project: ${esc(session.project_display || session.project || "~")}</span>
-          <span>Sandbox: ${esc(session.sandbox_profile || "off")}</span>
           <span class="mono">ID: ${esc(session.short_id)}…</span>
         </div>
         <div class="detail-genre-row">
@@ -404,10 +460,25 @@ function renderDetail(session) {
         </div>
       </div>
       <div class="detail-actions">
-        <button class="btn btn-primary" id="btn-open">Open in tmux</button>
-        <button class="btn btn-secondary" id="btn-copy">Copy command</button>
         ${obsBtn}
         <button class="btn btn-danger" id="btn-delete" title="Permanently delete this session (grok sessions delete)">Delete</button>
+      </div>
+      <div class="detail-copy-block">
+        <div class="detail-copy-session-sb">
+          <span class="detail-copy-session-sb-label">This session launched as</span>
+          ${sandboxBadgeHtml(sb, { extraClass: "sandbox-badge-lg" })}
+          <span class="detail-copy-session-sb-note">read-only · ★ = match launch sandbox</span>
+        </div>
+        <p class="detail-copy-hint">
+          <strong>Copy resume</strong> starts a <em>new process</em>. Buttons choose sandbox for that process only —
+          they do <strong>not</strong> change this session’s recorded sandbox (${esc(sbLabel)}).
+        </p>
+        <div class="detail-copy-row">
+          <div class="copy-cmd-group" role="group" aria-label="Copy resume commands (sandbox for new process)">
+            <span class="copy-cmd-label">Copy resume</span>
+            ${resumeButtons}
+          </div>
+        </div>
       </div>
     </div>`;
 
@@ -429,8 +500,12 @@ function renderDetail(session) {
     });
   }
 
-  $("#btn-open").addEventListener("click", () => openSession(session.id));
-  $("#btn-copy").addEventListener("click", () => copyCommand(session.command));
+  detailEl.querySelectorAll("[data-copy-resume]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const profile = btn.dataset.copyResume;
+      copyCommand(buildResumeCommand(session.id, profile), `resume · ${profile}`);
+    });
+  });
 
   const obsBtnEl = $("#btn-obsidian");
   if (obsBtnEl) {
@@ -847,6 +922,66 @@ async function toggleHideEmpty(checked) {
   }
 }
 
+function paintSandboxModes(status) {
+  const group = $("#sandbox-modes");
+  if (!group || !status) return;
+  state.sandbox = status;
+  const profile = status.profile || DEFAULT_SANDBOX;
+  group.classList.toggle("is-mismatch", status.sources_match === false);
+  group.querySelectorAll(".btn-sandbox-mode").forEach((btn) => {
+    const id = btn.dataset.sandbox;
+    const active = id === profile;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  const mismatch =
+    status.sources_match === false
+      ? ` Config=${status.config_profile} · bashrc=${status.bashrc_profile}.`
+      : "";
+  group.title =
+    `NEW DEFAULT for plain \`grok\` (writes config.toml; ~/bin/grok applies it immediately).` +
+    ` Does not change existing sessions.` +
+    ` Effective default: ${profile}.${mismatch}` +
+    ` One-shot override: grok --sandbox off|coding|maxsec.` +
+    ` Copy new still copies an explicit command.`;
+}
+
+async function loadSandboxStatus() {
+  try {
+    const status = await api("/api/sandbox");
+    paintSandboxModes(status);
+  } catch (e) {
+    const group = $("#sandbox-modes");
+    if (group) group.classList.add("is-mismatch");
+  }
+}
+
+async function setSandboxProfile(profile) {
+  const group = $("#sandbox-modes");
+  const buttons = group ? [...group.querySelectorAll(".btn-sandbox-mode")] : [];
+  buttons.forEach((b) => {
+    b.disabled = true;
+  });
+  try {
+    const status = await api("/api/sandbox", {
+      method: "PATCH",
+      body: JSON.stringify({ profile }),
+    });
+    paintSandboxModes(status);
+    showToast(
+      status.message || `New-session default → ${status.profile}`,
+      "success"
+    );
+    // Existing sessions keep launch sandbox — no list reload needed.
+  } catch (e) {
+    showToast(`Sandbox set failed: ${e.message}`, "error");
+  } finally {
+    buttons.forEach((b) => {
+      b.disabled = false;
+    });
+  }
+}
+
 async function saveAlias(id) {
   const input = $("#detail-title");
   if (!input) return;
@@ -898,34 +1033,6 @@ async function togglePin(id) {
   }
 }
 
-async function openSession(id) {
-  try {
-    const result = await api(`/api/sessions/${id}/open`, { method: "POST" });
-    if (result.ok) {
-      showToast(result.message, "success");
-    } else {
-      showToast(result.message, "error");
-      copyCommand(result.command);
-    }
-  } catch (e) {
-    showToast(`Open failed: ${e.message}`, "error");
-  }
-}
-
-async function newSession() {
-  try {
-    const result = await api("/api/sessions/new", { method: "POST" });
-    if (result.ok) {
-      showToast(result.message, "success");
-    } else {
-      showToast(result.message, "error");
-      copyCommand(result.command);
-    }
-  } catch (e) {
-    showToast(`New session failed: ${e.message}`, "error");
-  }
-}
-
 async function openObsidianNote(id) {
   try {
     const result = await api(`/api/sessions/${id}/obsidian`, { method: "POST" });
@@ -958,9 +1065,10 @@ async function syncObsidian() {
   }
 }
 
-function copyCommand(cmd) {
+function copyCommand(cmd, label = "") {
+  const toastLabel = label ? `${label}: ${cmd}` : cmd;
   navigator.clipboard.writeText(cmd).then(
-    () => showToast(`Copied: ${cmd}`, "success"),
+    () => showToast(`Copied: ${toastLabel}`, "success"),
     () => showToast("Clipboard copy failed", "error")
   );
 }
@@ -996,11 +1104,26 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-$("#btn-new").addEventListener("click", newSession);
 $("#btn-sync").addEventListener("click", syncObsidian);
 $("#btn-all-vesper-canvas")?.addEventListener("click", () => exportAllOverviewCanvas("vesper"));
 $("#btn-all-lilith-canvas")?.addEventListener("click", () => exportAllOverviewCanvas("lilith"));
 $("#btn-refresh").addEventListener("click", refreshSessions);
+$("#sandbox-modes")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".btn-sandbox-mode");
+  if (!btn || btn.disabled) return;
+  const profile = btn.dataset.sandbox;
+  if (!profile) return;
+  if (state.sandbox && state.sandbox.profile === profile) return;
+  setSandboxProfile(profile);
+});
+
+$("#copy-new-cmds")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-copy-new]");
+  if (!btn) return;
+  const profile = btn.dataset.copyNew;
+  if (!profile) return;
+  copyCommand(buildNewCommand(profile), `new · ${profile}`);
+});
 $("#hide-empty")?.addEventListener("change", (e) => toggleHideEmpty(e.target.checked));
 $("#btn-purge-empty")?.addEventListener("click", purgeEmptySessions);
 
@@ -1084,7 +1207,7 @@ async function checkServerHealth() {
 }
 
 initSidebarResize();
-Promise.all([loadGenres(), loadSessions()]).catch((e) =>
+Promise.all([loadGenres(), loadSessions(), loadSandboxStatus()]).catch((e) =>
   showToast(`Load failed: ${e.message}`, "error")
 );
 document.addEventListener("visibilitychange", () => {
