@@ -8,6 +8,12 @@ Local web UI for browsing, resuming, and syncing **Grok Build** sessions to **Ob
 
 **Not for:** Cloud multi-user hosting, non-Grok agents, or generic chat history apps.
 
+## Screenshots
+
+Fresh install / empty state (no sessions yet — expected on a clean machine):
+
+![Nasty Session Pit — empty state](docs/screenshots/01-empty-state.png)
+
 ---
 
 ## Features
