@@ -613,7 +613,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--import-remote",
         action="store_true",
-        help="With --all, run `grok import` first to pull remote-only sessions",
+        help="Kept for old commands. grok 1.0.50 has no import subcommand; local sessions only",
     )
     parser.add_argument(
         "--include-empty",
@@ -624,16 +624,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def import_remote_sessions() -> None:
-    proc = run(["grok", "import"], check=False)
-    if proc.stdout.strip():
-        print(proc.stdout.strip())
-    if proc.returncode != 0 and proc.stderr.strip():
-        print(proc.stderr.strip(), file=sys.stderr)
+    """Do not run `grok import`.
+
+    That word is not a subcommand. It starts the TUI, and the sandbox
+    returns Permission denied (os error 13) when the TUI opens /dev/tty.
+    """
+    print(
+        "remote import skipped: this grok CLI has no import subcommand; using local sessions only",
+        file=sys.stderr,
+    )
 
 
 def sync_all_sessions(args: argparse.Namespace) -> int:
     if args.import_remote:
-        print("importing remote sessions...")
         import_remote_sessions()
 
     all_on_disk = list((GROK_HOME / "sessions").rglob("summary.json"))

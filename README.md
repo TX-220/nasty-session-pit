@@ -181,7 +181,7 @@ Lilith overview is also available from **Viora Vault Hub** → *Canvas: All Lili
 |--------|-----|
 | Open UI | `python3 server.py` (or local `vesper-forge` launcher) |
 | Sync all sessions → Obsidian | UI **Sync to Obsidian**, or: |
-| | `grok-export-to-obsidian --all --import-remote --force` |
+| | `grok-export-to-obsidian --all --force` (`--import-remote` is a no-op; grok has no import subcommand) |
 | Resume session (CLI) | `grok -r <SESSION_ID> --sandbox off` |
 | List sessions (CLI) | `grok sessions list` |
 

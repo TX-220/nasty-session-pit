@@ -316,36 +316,23 @@ def update_sandbox(body: SandboxUpdate) -> dict:
 
 @app.post("/api/refresh")
 def refresh_sessions() -> RefreshResponse:
-    before = len(list((Path.home() / ".grok/sessions").rglob("summary.json")))
-    imported = 0
-    try:
-        proc = subprocess.run(
-            ["grok", "import"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=_hub_env(),
-        )
-        output = (proc.stdout or "") + (proc.stderr or "")
-        if "imported" in output.lower():
-            imported = output.lower().count("imported")
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
-            return RefreshResponse(
-                ok=False,
-                message=f"grok import failed: {err}",
-                total=before,
-            )
-    except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as exc:
-        return RefreshResponse(ok=False, message=str(exc), total=before)
-    after = len(list((Path.home() / ".grok/sessions").rglob("summary.json")))
-    new_count = max(0, after - before)
+    """Rescan local session files.
+
+    grok 1.0.50 has no `import` subcommand. `grok import` is parsed as a
+    prompt and starts the TUI. Pit's wrapper forces the config sandbox
+    (coding/maxsec), and that TUI's /dev/tty open returns EACCES
+    (`Permission denied (os error 13)`). Local summaries are already on disk.
+    """
+    on_disk = len(list((Path.home() / ".grok/sessions").rglob("summary.json")))
     rows = discover_sessions(store)
     return RefreshResponse(
         ok=True,
-        message=f"Refreshed: {len(rows)} shown ({after} on disk, +{new_count} new)",
-        total=after,
-        imported=new_count,
+        message=(
+            f"Refreshed: {len(rows)} shown ({on_disk} on disk). "
+            "Remote import is not in this grok CLI."
+        ),
+        total=on_disk,
+        imported=0,
     )
 
 

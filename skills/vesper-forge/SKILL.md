@@ -37,7 +37,7 @@ vesper-forge --stop
 
 | Button | Effect |
 |--------|--------|
-| Refresh | `grok import` + reload session list |
+| Refresh | Rescan local `~/.grok/sessions` (no `grok import`; that subcommand is gone) |
 | New | Open a new Grok session in tmux |
 | Sync to Obsidian | `grok-export-to-obsidian --all --import-remote --force` |
 | All Vesper / Lilith Canvas | Overview canvas export |
