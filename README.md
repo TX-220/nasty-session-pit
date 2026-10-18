@@ -14,6 +14,10 @@ Fresh install / empty state (no sessions yet — expected on a clean machine):
 
 ![Nasty Session Pit — empty state](docs/screenshots/01-empty-state.png)
 
+Sample sessions (placeholder titles and paths only):
+
+![Nasty Session Pit — sample sessions](docs/screenshots/nasty-session-pit-sample.png)
+
 ---
 
 ## Features
